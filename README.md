@@ -37,6 +37,7 @@ _Discovery_ currently uses _Enterprise_ `Pulsar` objects.
 
 - `makedelay(psr, delayfunc, [common, name])`: returns a JAX-ready function that implements a deterministic delay for `psr`. Here `delayfunc` must be a JAX-ready function with signature `delayfunc(arg1, ...)`. The resulting delay parameters are named `{psrname}_{name}_{argX}`, unless they are included in the list `common`.
 - `make_solardm(psr)` [in `solar.py`]: calculates the DM delay in a 1/r^2 solar wind density model. Returns a function with signature `solardm(n_earth)`.
+- `make_chromaticdecay(psr)` [in `solar.py`]: calculates a chromatic exponential-dip delay. Returns a function with signature `decay(t0, log10_Amp, log10_tau, idx)`.
 
 ## Likelihood (`likelihood.py`)
 

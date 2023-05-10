@@ -160,7 +160,7 @@ def fourierbasis(psr, components, T=None):
 
     return np.repeat(f, 2), np.repeat(df, 2), fmat
 
-def dmfourierbasis(psr, components, T=None, fref=1400):
+def dmfourierbasis(psr, components, T=None, fref=1400.0):
     f, df, fmat = fourierbasis(psr, components, T)
 
     Dm = (fref / psr.freqs)**2

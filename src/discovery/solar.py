@@ -35,3 +35,14 @@ def make_solardm(psr):
         return n_earth * shape
 
     return solardm
+
+def make_chromaticdecay(psr):
+    """From enterprise_extensions: calculate chromatic exponential-dip delay."""
+
+    toadays, normfreqs = matrix.jnparray(psr.toas / const.day), matrix.jnparray(1400.0 / psr.freqs)
+
+    def decay(t0, log10_Amp, log10_tau, idx):
+        dt = toadays - t0
+        return matrix.jnp.where(dt > 0.0, -1.0 * (10**log10_Amp) * matrix.jnp.exp(-dt / (10**log10_tau)) * normfreqs**idx, 0.0)
+
+    return decay
