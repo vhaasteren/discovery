@@ -47,13 +47,16 @@ _Discovery_ currently uses _Enterprise_ `Pulsar` objects.
 The following implements a standard NANOGrav likelihood + prior for pulsar `psr`, with free parameters `['{psrname}_rednoise_gamma', '{psrname}_rednoise_log10_A', 'crn_gamma', 'crn_log10_A']`:
 
 ```
+import discovery as ds
+
 psl = ds.PulsarLikelihood([psr.residuals,
                            ds.makenoise_measurement(psr, noisedict),
                            ds.makegp_ecorr(psr, noisedict),
                            ds.makegp_timing(psr),
-                           ds.makegp_fourier(psr, ds.powerlaw, 30, fourierbasis=ds.fourierbasis, name='rednoise'),
-                           ds.makegp_fourier(psr, ds.powerlaw, 14, fourierbasis=ds.fourierbasis,
-                                             common=['crn_log10_A', 'crn_gamma'], name='crn')])
+                           ds.makegp_fourier(psr, ds.powerlaw, 30, name='rednoise'),
+                           ds.makegp_fourier(psr, ds.powerlaw, 14, common=['crn_log10_A', 'crn_gamma'], name='crn')])
 logl = psl.logL
 logp = dp.makelogprior_uniform(logl.params)
 ```
+
+Then you would use `jax.jit(logl)` (and perhaps `jax.jit(jax.grad(logl)))`) and `jax.jit(logp)` in inference.
