@@ -102,9 +102,12 @@ class NoiseMatrix1D_novar(ConstantKernel):
         return y / self.N, self.ld
 
     def make_solve_1d(self):
-        N, ld = jnparray(self.N), self.ld
+        N, ld = jnparray(self.N), jnparray(self.ld)
+
+        # closes on N, ld
         def solve_1d(y):
             return y / N, ld
+
         return solve_1d
 
     def solve_2d(self, T):
@@ -120,6 +123,7 @@ class NoiseMatrix1D_var(VariableKernel):
     def make_kernelproduct(self, y):
         y2, getN = jnparray(y**2), self.getN
 
+        # closes on y2, getN
         def kernelproduct(params):
             N = getN(params)
             return -0.5 * jnp.sum(y2 / N) - 0.5 * jnp.sum(jnp.log(N))
@@ -130,6 +134,8 @@ class NoiseMatrix1D_var(VariableKernel):
 
     def make_inv(self):
         getN = self.getN
+
+        # closes on getN
         def inv(params):
             N = getN(params)
             return jnp.diag(1.0 / N), jnp.sum(jnp.log(N))
@@ -172,6 +178,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         Nmy = self.N.solve_1d(y)[0] - self.NmF @ jsp.linalg.cho_solve(self.cf, self.NmF.T @ y)
         product = -0.5 * y @ Nmy - 0.5 * self.ld
 
+        # closes on product
         def kernelproduct(params={}):
             return product
 
@@ -186,7 +193,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         N_solve_1d = self.N.make_solve_1d()
         NmF = jnparray(self.NmF)
         cf = (jnparray(self.cf[0]), self.cf[1])
-        ld = self.ld
+        ld = jnp.array(self.ld)
 
         # closes on N_solve_1d, NmF, cf, ld
         def solve_1d(y):
@@ -221,11 +228,12 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         NmF, ldN = self.N.solve_2d(self.F)
         FtNmF = self.F.T @ NmF
 
-        NmF, FtNmF = jnparray(NmF), jnparray(FtNmF)
+        y = jnparray(y)
+        NmF, FtNmF, ldN = jnparray(NmF), jnparray(FtNmF), jnparray(ldN)
         P_var_inv = self.P_var.make_inv()
         N_solve_1d = self.N.make_solve_1d()
 
-        # closes on y, delay, P_var_inv, FtNmF, ldN
+        # closes on y, delay, P_var_inv, NmF, FtNmF, ldN
         def kernel(params):
             yp = y - delay(params)
 
@@ -251,6 +259,7 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         ytNmy = y @ Nmy
         NmFty = NmF.T @ y
 
+        FtNmF, NmFty, ytNmy, ldN = jnparray(FtNmF), jnparray(NmFty), jnparray(ytNmy), jnparray(ldN)
         P_var_inv = self.P_var.make_inv()
 
         # closes on P_var_inv, FtNmF, NmFty, ytNmy, ldN
@@ -288,7 +297,9 @@ class ShermanMorrisonKernel_varP(VariableKernel):
 
         P_var_inv = self.P_var.inv
 
-        # closes on P_var, FtNmF, FtNmy, FtMmT, ytNmy, TtNmy, TtNmT, TtNmF
+        FtNmF, FtNmy, FtNmT, ytNmy = jnparray(FtNmF), jnparray(FtNmy), jnparray(FtNmT), jnparray(ytNmy)
+        TtNmy, TtNmT, TtNmF = jnparray(TtNmy), jnparray(TtNmT), jnparray(TtNmF)
+        # closes on P_var_inv, FtNmF, FtNmy, FtMmT, ytNmy, TtNmy, TtNmT, TtNmF
         def kernelterms(params):
             Pinv, ldP = P_var_inv(params)
             cf = jsp.linalg.cho_factor(Pinv + FtNmF)
