@@ -64,6 +64,17 @@ def CompoundGP(gplist):
     else:
         raise NotImplementedError("Cannot concatenate these types of GPs.")
 
+# sum delays
+
+def CompoundDelay(delaylist):
+    if len(delaylist) == 1:
+        return delaylist[0]
+
+    def delayfunc(params):
+        return sum(delay(params) for delay in delaylist)
+    delayfunc.params = sorted(set.union(*[set(delay.params) for delay in delaylist]))
+
+    return delayfunc
 
 # consider passing inv as a 1D object
 
@@ -89,6 +100,12 @@ class NoiseMatrix1D_novar(ConstantKernel):
 
     def solve_1d(self, y):
         return y / self.N, self.ld
+
+    def make_solve_1d(self):
+        N, ld = jnparray(self.N), self.ld
+        def solve_1d(y):
+            return y / N, ld
+        return solve_1d
 
     def solve_2d(self, T):
         return T / self.N[:, np.newaxis], self.ld
@@ -165,6 +182,18 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
     def solve_1d(self, y):
         return self.N.solve_1d(y)[0] - self.NmF @ sp.linalg.cho_solve(self.cf, self.NmF.T @ y), self.ld
 
+    def make_solve_1d(self):
+        N_solve_1d = self.N.make_solve_1d()
+        NmF = jnparray(self.NmF)
+        cf = (jnparray(self.cf[0]), self.cf[1])
+        ld = self.ld
+
+        # closes on N_solve_1d, NmF, cf, ld
+        def solve_1d(y):
+            return N_solve_1d(y)[0] - NmF @ jsp.linalg.cho_solve(cf, NmF.T @ y), ld
+
+        return solve_1d
+
     def solve_2d(self, y):
         return self.N.solve_2d(y)[0] - self.NmF @ sp.linalg.cho_solve(self.cf, self.NmF.T @ y), self.ld
 
@@ -187,6 +216,32 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
 class ShermanMorrisonKernel_varP(VariableKernel):
     def __init__(self, N, F, P_var):
         self.N, self.F, self.P_var = N, F, P_var
+
+    def make_kernel(self, y, delay):
+        NmF, ldN = self.N.solve_2d(self.F)
+        FtNmF = self.F.T @ NmF
+
+        NmF, FtNmF = jnparray(NmF), jnparray(FtNmF)
+        P_var_inv = self.P_var.make_inv()
+        N_solve_1d = self.N.make_solve_1d()
+
+        # closes on y, delay, P_var_inv, FtNmF, ldN
+        def kernel(params):
+            yp = y - delay(params)
+
+            Nmy, _ = N_solve_1d(yp)
+            ytNmy = yp @ Nmy
+            NmFty = NmF.T @ yp
+
+            Pinv, ldP = P_var_inv(params)
+            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ jsp.linalg.cho_solve(cf, NmFty)
+
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+
+        kernel.params = delay.params + P_var_inv.params
+
+        return kernel
 
     def make_kernelproduct(self, y):
         NmF, ldN = self.N.solve_2d(self.F)

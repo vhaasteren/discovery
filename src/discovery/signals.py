@@ -207,3 +207,16 @@ def makepowerlaw_crn(components):
             return phi
 
     return powerlaw_crn
+
+# delay
+
+def makedelay(psr, delay, common=[], name='delay'):
+    argspec = inspect.getfullargspec(delay)
+    argmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}')
+              for arg in argspec.args]
+
+    def delayfunc(params):
+        return delay(*[params[arg] for arg in argmap])
+    delayfunc.params = argmap
+
+    return delayfunc

@@ -33,6 +33,7 @@ from . import matrix
 class PulsarLikelihood:
     def __init__(self, args, concat=True):
         y     = [arg for arg in args if isinstance(arg, np.ndarray)]
+        delay = [arg for arg in args if callable(arg)]
         noise = [arg for arg in args if isinstance(arg, matrix.Kernel)]
         cgps  = [arg for arg in args if isinstance(arg, matrix.ConstantGP)]
         vgps  = [arg for arg in args if isinstance(arg, matrix.VariableGP)]
@@ -42,7 +43,7 @@ class PulsarLikelihood:
         elif len(noise) == 0:
             raise ValueError("I need exactly one noise Kernel.")
 
-        noise, y0 = noise[0], y[0]
+        noise, y = noise[0], y[0]
 
         if cgps:
             if concat:
@@ -66,8 +67,14 @@ class PulsarLikelihood:
         else:
             vsm = csm
 
-        self.y, self.N = y0, vsm
+        if len(delay) > 0:
+            delay = matrix.CompoundDelay(delay)
+
+        self.y, self.delay, self.N = y, delay, vsm
 
     @functools.cached_property
     def logL(self):
-        return self.N.make_kernelproduct(self.y)
+        if self.delay:
+            return self.N.make_kernel(self.y, self.delay)
+        else:
+            return self.N.make_kernelproduct(self.y)
