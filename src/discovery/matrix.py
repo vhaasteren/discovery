@@ -57,7 +57,7 @@ def CompoundGP(gplist):
         F = np.hstack([gp.F for gp in gplist])
 
         def Phi(params):
-            return jnp.concatenate([gp.Phi.N(params) for gp in gplist])
+            return jnp.concatenate([gp.Phi.getN(params) for gp in gplist])
         Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
         return VariableGP(NoiseMatrix1D_var(Phi), F)

@@ -1,4 +1,5 @@
 import inspect
+import typing
 
 import numpy as np
 import jax.numpy as jnp
@@ -159,10 +160,18 @@ def fourierbasis(psr, components, T=None):
 
     return np.repeat(f, 2), np.repeat(df, 2), fmat
 
-def makegp_fourier(psr, prior, components, T=None, common=[], name='fourierGP'):
-    argmap = [arg if arg in common else f'{psr.name}_{name}_{arg}'
-              for arg in inspect.getfullargspec(prior).args
-              if arg not in ['f', 'df']]
+def dmfourierbasis(psr, components, T=None, fref=1400):
+    f, df, fmat = fourierbasis(psr, components, T)
+
+    Dm = (fref / psr.freqs)**2
+
+    return f, df, fmat * Dm[:, None]
+
+def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='fourierGP'):
+    argspec = inspect.getfullargspec(prior)
+    argmap = [(arg if arg in common else f'{psr.name}_{name}_{arg}') +
+              (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+              for arg in argspec.args if arg not in ['f', 'df']]
 
     f, df, fmat = fourierbasis(psr, components, T)
 
@@ -178,7 +187,7 @@ def makegp_fourier(psr, prior, components, T=None, common=[], name='fourierGP'):
 def powerlaw(f, df, log10_A, gamma):
     return (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df
 
-def freespectrum(f, df, log10_rho):
+def freespectrum(f, df, log10_rho: typing.Sequence):
     return jnp.repeat(10.0**(2.0 * log10_rho), 2)
 
 # combined red_noise + crn
