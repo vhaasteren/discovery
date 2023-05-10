@@ -13,8 +13,8 @@ def uniform(par, a, b):
     return logpriorfunc
 
 priordict_standard = {
-    'red_noise_log10_A': [-18, -11],
-    'red_noise_gamma': [0, 7],
+    'rednoise_log10_A': [-18, -11],
+    'rednoise_gamma': [0, 7],
     'crn_log10_A': [-18, -11],
     'crn_gamma': [0, 7],
     'gw_log10_A': [-18, -11],
