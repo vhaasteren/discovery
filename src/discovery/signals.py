@@ -169,7 +169,7 @@ def dmfourierbasis(psr, components, T=None, fref=1400):
 
 def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='fourierGP'):
     argspec = inspect.getfullargspec(prior)
-    argmap = [(arg if arg in common else f'{psr.name}_{name}_{arg}') +
+    argmap = [('arg' if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
               (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
               for arg in argspec.args if arg not in ['f', 'df']]
 
