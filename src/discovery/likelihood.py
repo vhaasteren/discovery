@@ -78,3 +78,36 @@ class PulsarLikelihood:
             return self.N.make_kernel(self.y, self.delay)
         else:
             return self.N.make_kernelproduct(self.y)
+
+
+class GlobalLikelihood:
+    def __init__(self, psls, globalgp=None):
+        self.psls, self.globalgp = psls, globalgp
+
+    @functools.cached_property
+    def logL(self):
+        if self.globalgp is None:
+            logls = [psl.logL for psl in self.psls]
+
+            def loglike(params):
+                return sum(logl(params) for logl in logls)
+
+            loglike.params = sorted(set.union(*[set(logl.params) for logl in logls]))
+        else:
+            P_var_inv = self.globalgp.Phi.make_inv()
+            kterms = [psl.N.make_kernelterms(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
+
+            def loglike(params):
+                terms = [kterm(params) for kterm in kterms]
+
+                p0 = sum([term[0] for term in terms])
+                FtNmy = matrix.jnp.concatenate([term[1] for term in terms])
+
+                Pinv, ldP = P_var_inv(params)
+                cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*[term[2] for term in terms]))
+
+                return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
+
+            loglike.params = sorted(set.union(*[set(kterm.params) for kterm in kterms])) + P_var_inv.params
+
+        return loglike

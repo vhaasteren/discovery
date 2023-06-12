@@ -43,6 +43,10 @@ class VariableGP:
     def __init__(self, Phi, F):
         self.Phi, self.F = Phi, F
 
+class GlobalVariableGP:
+    def __init__(self, Phi, Fs):
+        self.Phi, self.Fs = Phi, Fs
+
 # concatenate GPs
 def CompoundGP(gplist):
     if len(gplist) == 1:
@@ -117,7 +121,6 @@ class NoiseMatrix1D_novar(ConstantKernel):
 class NoiseMatrix1D_var(VariableKernel):
     def __init__(self, getN):
         self.getN = getN
-
         self.params = getN.params
 
     def make_kernelproduct(self, y):
@@ -142,6 +145,24 @@ class NoiseMatrix1D_var(VariableKernel):
         inv.params = getN.params
 
         return inv
+
+
+class NoiseMatrix2D_var(VariableKernel):
+    def __init__(self, getN):
+        self.getN = getN
+        self.params = getN.params
+
+    def make_inv(self):
+        getN = self.getN
+
+        # closes on getN
+        def inv(params):
+            N = getN(params)
+            return jnp.linalg.inv(N), jnp.linalg.slogdet(N)[1]
+        inv.params = getN.params
+
+        return inv
+
 
 def ShermanMorrisonKernel(N, F, P):
     if not isinstance(F, np.ndarray):
@@ -295,7 +316,7 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         FtNmT = self.F.T @ NmT
         TtNmT = T.T @ NmT
 
-        P_var_inv = self.P_var.inv
+        P_var_inv = self.P_var.make_inv()
 
         FtNmF, FtNmy, FtNmT, ytNmy = jnparray(FtNmF), jnparray(FtNmy), jnparray(FtNmT), jnparray(ytNmy)
         TtNmy, TtNmT, TtNmF = jnparray(TtNmy), jnparray(TtNmT), jnparray(TtNmF)

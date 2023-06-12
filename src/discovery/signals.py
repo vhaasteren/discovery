@@ -1,5 +1,6 @@
 import inspect
 import typing
+from collections.abc import Iterable
 
 import numpy as np
 import jax.numpy as jnp
@@ -146,9 +147,15 @@ def makegp_timing(psr, constant=1.0e40):
 
 # Fourier GP
 
+def getspan(psrs):
+    if isinstance(psrs, Iterable):
+        return max(psr.toas.max() for psr in psrs) - min(psr.toas.min() for psr in psrs)
+    else:
+        return psr.toas.max() - psr.toas.min()
+
 def fourierbasis(psr, components, T=None):
     if T is None:
-        T  = psr.toas.max() - psr.toas.min()
+        T = getspan(psr)
 
     f  = np.arange(1, components + 1, dtype=np.float64) / T
     df = np.diff(np.concatenate((np.array([0]), f)))
@@ -182,6 +189,27 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
 
     return matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmat)
 
+# Global Fourier GP
+
+def makegp_fourier_global(psrs, prior, orf, components, T, fourierbasis=fourierbasis, name='globalFourierGP'):
+    argspec = inspect.getfullargspec(prior)
+    argmap = [f'{name}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+              for arg in argspec.args if arg not in ['f', 'df']]
+
+    fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
+
+    orfs = matrix.jnparray([[orf(p1.pos, p2.pos) for p1 in psrs] for p2 in psrs])
+    f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
+    def priorfunc(params):
+        phidiag = prior(f, df, *[params[arg] for arg in argmap])
+
+        return jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfs])
+    priorfunc.params = argmap
+
+    # maybe make this a GlobalVariableGP
+    return matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats)
+
+
 # priors: these need to be jax functions
 
 def powerlaw(f, df, log10_A, gamma):
@@ -207,6 +235,28 @@ def makepowerlaw_crn(components):
             return phi
 
     return powerlaw_crn
+
+# ORFs: OK as numpy functions
+
+def hd_orf(pos1, pos2):
+    if np.all(pos1 == pos2):
+        return 1.0
+    else:
+        omc2 = (1.0 - np.dot(pos1, pos2)) / 2.0
+        return 1.5 * omc2 * np.log(omc2) - 0.25 * omc2 + 0.5
+
+def monopole_orf(pos1, pos2):
+    if np.all(pos1 == pos2):
+        # conditioning trick from enterprise
+        return 1.0 + 1.0e-6
+    else:
+        return 1.0
+
+def dipole_orf(pos1, pos2):
+    if np.all(pos1 == pos2):
+        return 1.0 + 1.0e-6
+    else:
+        return np.dot(pos1, pos2)
 
 # delay
 
