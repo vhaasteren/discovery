@@ -44,8 +44,8 @@ class VariableGP:
         self.Phi, self.F = Phi, F
 
 class GlobalVariableGP:
-    def __init__(self, Phi, Fs):
-        self.Phi, self.Fs = Phi, Fs
+    def __init__(self, Phi, Fs, Phi_inv=None):
+        self.Phi, self.Fs, self.Phi_inv = Phi, Fs, Phi_inv
 
 # concatenate GPs
 def CompoundGP(gplist):

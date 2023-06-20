@@ -197,8 +197,9 @@ def makegp_fourier_global(psrs, prior, orf, components, T, fourierbasis=fourierb
               for arg in argspec.args if arg not in ['f', 'df']]
 
     fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
+    orfmat = np.array([[orf(p1.pos, p2.pos) for p1 in psrs] for p2 in psrs], dtype='d')
 
-    orfs = matrix.jnparray([[orf(p1.pos, p2.pos) for p1 in psrs] for p2 in psrs])
+    orfs = matrix.jnparray(orfmat)
     f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
     def priorfunc(params):
         phidiag = prior(f, df, *[params[arg] for arg in argmap])
@@ -206,8 +207,16 @@ def makegp_fourier_global(psrs, prior, orf, components, T, fourierbasis=fourierb
         return jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfs])
     priorfunc.params = argmap
 
+    invorfs, invlogdet = matrix.jnparray(np.linalg.inv(orfmat)), 1.0 / jnp.linalg.slogdet(orfmat)[1]
+    def invprior(params):
+        invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
+
+        return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorfs]),
+                jnp.sum(invlogdet + len(invphidiag) * jnp.log(invphidiag)))
+    invprior.params = argmap
+
     # maybe make this a GlobalVariableGP
-    return matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats)
+    return matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, invprior)
 
 
 # priors: these need to be jax functions

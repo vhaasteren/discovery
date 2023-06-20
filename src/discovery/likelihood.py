@@ -94,7 +94,7 @@ class GlobalLikelihood:
 
             loglike.params = sorted(set.union(*[set(logl.params) for logl in logls]))
         else:
-            P_var_inv = self.globalgp.Phi.make_inv()
+            P_var_inv = self.globalgp.Phi_inv # self.globalgp.Phi.make_inv()
             kterms = [psl.N.make_kernelterms(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
 
             def loglike(params):
