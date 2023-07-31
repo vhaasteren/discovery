@@ -151,7 +151,7 @@ def getspan(psrs):
     if isinstance(psrs, Iterable):
         return max(psr.toas.max() for psr in psrs) - min(psr.toas.min() for psr in psrs)
     else:
-        return psr.toas.max() - psr.toas.min()
+        return psrs.toas.max() - psrs.toas.min()
 
 def fourierbasis(psr, components, T=None):
     if T is None:
