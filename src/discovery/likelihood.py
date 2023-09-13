@@ -79,10 +79,55 @@ class PulsarLikelihood:
         else:
             return self.N.make_kernelproduct(self.y)
 
+    @functools.cached_property
+    def sample(self):
+        return self.N.make_sample()
+
 
 class GlobalLikelihood:
     def __init__(self, psls, globalgp=None):
         self.psls, self.globalgp = psls, globalgp
+
+    @functools.cached_property
+    def sample(self):
+        if self.globalgp is None:
+            sls = [psl.sample for psl in self.psls]
+
+            def sampler(key, params):
+                ys = []
+                for sl in sls:
+                    key, y = sl(key, params)
+                    ys.append(y)
+
+                return key, ys
+
+            sampler.params = sorted(set.union(*[set(sl.params) for sl in sls]))
+        else:
+            sls = [psl.sample for psl in self.psls]
+
+            Phi_sample = self.globalgp.Phi.make_sample()
+
+            Fs = [matrix.jnparray(F) for F in self.globalgp.Fs]
+
+            i0, slcs = 0, []
+            for F in self.globalgp.Fs:
+                slcs.append(slice(i0, i0 + F.shape[1]))
+                i0 = i0 + F.shape[1]
+
+            def sampler(key, params):
+                key, c = Phi_sample(key, params)
+
+                ys = []
+                for sl, F, slc in zip(sls, Fs, slcs):
+                    key, y = sl(key, params)
+                    ys.append(y + matrix.jnp.dot(F, c[slc]))
+
+                # ys = [key, _ := sl(key, params) + jnp.dot(F, c[slc]) for sl, F, slc in zip(sls, Fs, slcs)]
+                return key, ys
+
+            sampler.params = sorted(set.union(*[set(sl.params) for sl in sls])) + Phi_sample.params
+
+        return sampler
 
     @functools.cached_property
     def logL(self):

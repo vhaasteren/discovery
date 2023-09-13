@@ -117,6 +117,17 @@ class NoiseMatrix1D_novar(ConstantKernel):
     def solve_2d(self, T):
         return T / self.N[:, np.newaxis], self.ld
 
+    def make_sample(self):
+        N12 = jnparray(np.sqrt(self.N))
+
+        def sample(key):
+            key, subkey = jax.random.split(key)
+            return key, jax.random.normal(subkey, shape=N12.shape) * N12
+
+        sample.params = []
+
+        return sample
+
 
 class NoiseMatrix1D_var(VariableKernel):
     def __init__(self, getN):
@@ -146,6 +157,20 @@ class NoiseMatrix1D_var(VariableKernel):
 
         return inv
 
+    def make_sample(self):
+        getN = self.getN
+
+        # closes on getN
+        def sample(key, params):
+            N12 = jnp.sqrt(getN(params))
+
+            key, subkey = jax.random.split(key)
+            return key, jax.random.normal(subkey, shape=N12.shape) * N12
+
+        sample.params = getN.params
+
+        return sample
+
 
 class NoiseMatrix2D_var(VariableKernel):
     def __init__(self, getN):
@@ -162,6 +187,20 @@ class NoiseMatrix2D_var(VariableKernel):
         inv.params = getN.params
 
         return inv
+
+    def make_sample(self):
+        getN = self.getN
+
+        def sample(key, params):
+            N = getN(params)
+
+            key, subkey = jax.random.split(key)
+            return key, jnp.dot(jsp.linalg.cholesky(N, lower=True),
+                                jax.random.normal(subkey, shape=(N.shape[0],)))
+
+        sample.params = getN.params
+
+        return sample
 
 
 def ShermanMorrisonKernel(N, F, P):
@@ -186,7 +225,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         # (N + F P F^T)^-1 = N^-1 - N^-1 F (P^-1 + F^T N^-1 F)^-1 F^T N^-1
         # |N + F P F^T| = |N| |P| |P^-1 + F^T N^-1 F|
 
-        self.N = N
+        self.N, self.F, self.P = N, F, P
         self.NmF, ldN = N.solve_2d(F)
         FtNmF = F.T @ self.NmF
         Pinv, ldP = P.inv()
@@ -194,6 +233,21 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         self.ld = ldN + ldP + 2.0 * np.sum(np.log(np.diag(self.cf[0])))
 
         self.params = []
+
+    def make_sample(self):
+        N_sample = self.N.make_sample()
+        P_sample = self.P.make_sample()
+        F = jnparray(self.F)
+
+        def sample(key):
+            key, n = N_sample(key)
+            key, c = P_sample(key)
+
+            return key, n + jnp.dot(F, c)
+
+        sample.params = []
+
+        return sample
 
     def make_kernelproduct(self, y):
         Nmy = self.N.solve_1d(y)[0] - self.NmF @ jsp.linalg.cho_solve(self.cf, self.NmF.T @ y)
@@ -244,6 +298,21 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
 class ShermanMorrisonKernel_varP(VariableKernel):
     def __init__(self, N, F, P_var):
         self.N, self.F, self.P_var = N, F, P_var
+
+    def make_sample(self):
+        N_sample = self.N.make_sample()
+        P_sample = self.P_var.make_sample()
+        F = jnparray(self.F)
+
+        def sample(key, params):
+            key, n = N_sample(key)
+            key, c = P_sample(key, params)
+
+            return key, n + jnp.dot(F, c)
+
+        sample.params = P_sample.params
+
+        return sample
 
     def make_kernel(self, y, delay):
         NmF, ldN = self.N.solve_2d(self.F)

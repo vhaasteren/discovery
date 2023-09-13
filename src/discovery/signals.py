@@ -140,8 +140,19 @@ def makegp_ecorr(psr, noisedict={}):
 def makegp_improper(psr, fmat, constant=1.0e40, name='improperGP'):
     return matrix.ConstantGP(matrix.NoiseMatrix1D_novar(constant * np.ones(fmat.shape[1])), fmat)
 
-def makegp_timing(psr, constant=1.0e40):
+def makegp_timing(psr, constant=None, variance=None):
     fmat = np.array(psr.Mmat / np.sqrt(np.sum(psr.Mmat**2, axis=0)), dtype=np.float64)
+
+    if variance is None:
+        if constant is None:
+            constant = 1.0e40
+        # else constant can stay what it is
+    else:
+        if constant is None:
+            constant = variance * psr.Mmat.shape[0] / psr.Mmat.shape[1]
+            return makegp_improper(psr, fmat, constant=constant, name='timingmodel')
+        else:
+            raise ValueError("signals.makegp_timing() can take a specification of _either_ `constant` or `variance`.")
 
     return makegp_improper(psr, fmat, constant=constant, name='timingmodel')
 
