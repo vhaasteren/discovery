@@ -92,7 +92,7 @@ logl = gbl.logL
 logp = dp.makelogprior_uniform(logl.params)
 ```
 
-To sample a model (e.g., `gbl`):
+To create a random realization of a model (e.g., `gbl`) as a function of its parameters:
 
 ```
 sampler = gbl.sampler
