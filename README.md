@@ -49,7 +49,7 @@ _Discovery_ currently uses _Enterprise_ `Pulsar` objects.
 - `PulsarLikelihood(signals, concat=True)`: returns a `PulsarLikelihood` object, with a `logL` property that implements the single-pulsar likelihood as a JAX-ready function. The likelihood takes as a single argument a dictionary of parameters named as discussed above. Here `signals` is an iterable that must contain exactly one residual vector, exactly one noise `Kernel`, any number of `GP` objects, and any number of deterministic delays (any callable). If `concat=False`, the likelihood is built by nesting `ShermanMorrisonKernel`s, first consuming `ConstantGP` objects (those without parameters) and then `VariableGP`, but otherwise respecting the order in `signals`. If `concat=True`, the `ConstantGP`s and `VariableGP`s are separately concatenated, and then nested.
 - `GlobalLikelihood(psls, globalgp=None)`: returns `GlobalLikelihood` object, with a `logL` property that implements the multi-pulsar likelihood as a JAX-ready function. The likelihood takes as a single argument a dictionary of parameters. Here `psls` is an iterable that may contain any number of `PulsarLikelihood` objects, and `globalgp` is a `GlobalVariableGP` object, such as returned by `makegp_fourier_global`, encoding a joint GP for all pulsars.
 
-- The two likelihood objects have a `sample` property—a JAX-ready function that generates a random realization of the data if given a JAX key and a dictionary of parameters.
+- The two likelihood objects have a `sample` property—a JAX-ready function that generates a random realization of the data if given a JAX key and a dictionary of parameters. (According to JAX protocol, `sample` actually return a tuple consisting of the "split" key and the data realization.)
 
 ## Priors (`prior.py`)
 
@@ -90,4 +90,15 @@ gbl = ds.GlobalLikelihood((ds.PulsarLikelihood([psr.residuals,
                           ds.makegp_fourier_global(psrs, ds.powerlaw, ds.hd_orf, 14, T=Tspan, name='gw'))
 logl = gbl.logL
 logp = dp.makelogprior_uniform(logl.params)
+```
+
+To sample a model (e.g., `gbl`):
+
+```
+sampler = gbl.sampler
+
+p0 = ds.sample_uniform(sampler.params)
+key = jax.random.PRNGKey(42)
+
+key, y = sampler(key, p0)
 ```
