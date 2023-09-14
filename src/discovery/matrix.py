@@ -6,16 +6,29 @@ import jax.numpy
 import jax.scipy
 
 def config(backend):
-    global jnp, jsp, jnparray
+    global jnp, jsp, jnparray, jnpkey, jnpsplit, jnpnormal
 
     if backend == 'numpy':
         jnp, jsp = np, sp
+
         jnparray = lambda a: np.array(a, dtype=np.float64)
+
+        jnpkey    = lambda seed: np.random.default_rng(seed)
+        jnpsplit  = lambda gen: (gen, gen)
+        jnpnormal = lambda gen, shape: gen.normal(size=shape)
     elif backend == 'jax':
         jnp, jsp = jax.numpy, jax.scipy
+
         jnparray = lambda a: jnp.array(a, dtype=jnp.float64)
 
+        jnpkey    = lambda seed: jax.random.PRNGKey(seed)
+        jnpsplit  = jax.random.split
+        jnpnormal = jax.random.normal
+
 config('jax')
+
+def rngkey(seed):
+    return jnpkey(seed)
 
 class ConstantMatrix:
     pass
@@ -121,8 +134,8 @@ class NoiseMatrix1D_novar(ConstantKernel):
         N12 = jnparray(np.sqrt(self.N))
 
         def sample(key):
-            key, subkey = jax.random.split(key)
-            return key, jax.random.normal(subkey, shape=N12.shape) * N12
+            key, subkey = jnpsplit(key)
+            return key, jnpnormal(subkey, N12.shape) * N12
 
         sample.params = []
 
@@ -164,8 +177,8 @@ class NoiseMatrix1D_var(VariableKernel):
         def sample(key, params):
             N12 = jnp.sqrt(getN(params))
 
-            key, subkey = jax.random.split(key)
-            return key, jax.random.normal(subkey, shape=N12.shape) * N12
+            key, subkey = jnpsplit(key)
+            return key, jnpnormal(subkey, N12.shape) * N12
 
         sample.params = getN.params
 
@@ -194,9 +207,9 @@ class NoiseMatrix2D_var(VariableKernel):
         def sample(key, params):
             N = getN(params)
 
-            key, subkey = jax.random.split(key)
+            key, subkey = jnpsplit(key)
             return key, jnp.dot(jsp.linalg.cholesky(N, lower=True),
-                                jax.random.normal(subkey, shape=(N.shape[0],)))
+                                jnpnormal(subkey, (N.shape[0],)))
 
         sample.params = getN.params
 
