@@ -10,5 +10,6 @@ from .prior import *
 from .signals import *
 from .likelihood import *
 from .solar import *
+from .pulsar import *
 
 __version__ = "0.1"

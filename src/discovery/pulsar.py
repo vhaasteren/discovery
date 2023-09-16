@@ -62,6 +62,9 @@ class Pulsar:
         pydict.update({f'flags_{flag}': self.flags[flag] for flag in self.flags})
 
         meta = {attr: Pulsar.to_list(getattr(self, attr)) for attr in Pulsar.metadata}
+
+        # use attribute if present
+        noisedict = getattr(self, 'noisedict', None) if noisedict is None else noisedict
         if noisedict:
             meta['noisedict'] = {par: val for par, val in noisedict.items() if par.startswith(self.name)}
 
