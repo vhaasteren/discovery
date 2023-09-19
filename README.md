@@ -3,13 +3,17 @@
 _Discovery_ is a next-generation pulsar-timing-array data-analysis package, _built for speed_ on a [JAX](https://jax.readthedocs.io/en/latest/) backend that supports GPU execution and autodifferentiation.
 If [Enterprise](https://github.com/nanograv/enterprise) is Spock, logical and elegant, _Discovery_ is all Scotty, fast, efficient, and not above a hack if it gets you to warp speed.
 
+# Requirements
+
+_Discovery_ needs `numpy`, `scipy`, `jax`, `pyarrow`.
+
 # Data model
 
 The data model consists of `Kernel` objects (think of a noise matrix `N`, which can be inverted and applied to a vector, `N^{-1} y`, or even sandwiched with it, `y^T N^{-1} y`) and of `GP` objects, consisting of a basis `F` (sized `ntoas x ngp`) and a prior/kernel `Phi`. The kernel `ShermanMorrisonKernel(N, F, P)` combines a noise kernel and a GP.
 
 ## Pulsar data
 
-_Discovery_ currently uses _Enterprise_ `Pulsar` objects.
+_Discovery_ uses lightweight `Pulsar` objects saved as Arrow Feather files. To convert an _Enterprise_ `Pulsar` objects use `discovery.Pulsar.save_feather(psr, filename, noisedict)`, where noisedict is an optional dictionary of default parameter values. Some example datasets (based on NG 15yr) are included in the `data` folder.
 
 ## Noise and signal components (`signals.py`)
 
@@ -134,7 +138,7 @@ To simulate residuals for an array:
 
 ```
 import glob
-psrs = [ds.Pulsar.read_feather(f) for f in glob.glob('../data/*.feather')[:5]]
+psrs = [ds.Pulsar.read_feather(f) for f in glob.glob('data/*.feather')[:5]]
 
 Tspan = ds.getspan(psrs)
 
