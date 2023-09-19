@@ -102,3 +102,55 @@ key = jax.random.PRNGKey(42)
 
 key, y = sampler(key, p0)
 ```
+
+To simulate residuals for a pulsar based on an existing dataset:
+
+```
+psr = ds.Pulsar.read_feather('data/NG15yr-B1855+09.feather')
+
+psl = ds.PulsarLikelihood([psr.residuals,
+                           ds.makenoise_measurement(psr, psr.noisedict),
+                           ds.makegp_ecorr(psr, psr.noisedict),
+                           ds.makegp_timing(psr, variance=1e-12),
+                           ds.makegp_fourier(psr, ds.powerlaw, 30, name='rednoise'),
+                           ds.makegp_fourier(psr, ds.powerlaw, 14, common=['crn_log10_A', 'crn_gamma'], name='crn')
+                           ])
+
+sampler = psl.sample
+
+# fix parameters to reasonable value
+noisedict_red = {p: v for p,v in psr.noisedict.items() if 'rednoise' in p}
+params = {**ds.sample_uniform(sampler.params), **noisedict_red, 'crn_gamma': 4.3, 'crn_log10_A': -14.5}
+
+# should jit the sampler if simulating many datasets
+key = ds.rngkey(42)
+key, res = sampler(key, params)
+
+# update Pulsar object if desired (make PulsarLikelihood anew to analyze)
+psr.residuals = res
+```
+
+To simulate residuals for an array:
+
+```
+import glob
+psrs = [ds.Pulsar.read_feather(f) for f in glob.glob('../data/*.feather')[:5]]
+
+Tspan = ds.getspan(psrs)
+
+gbl = ds.GlobalLikelihood((ds.PulsarLikelihood([psr.residuals,
+                                                ds.makenoise_measurement(psr, psr.noisedict),
+                                                ds.makegp_ecorr(psr, psr.noisedict),
+                                                ds.makegp_timing(psr, variance=1e-14),
+                                                ds.makegp_fourier(psr, ds.powerlaw, 30, T=Tspan, name='rednoise')
+                                                ]) for psr in psrs),
+                          ds.makegp_fourier_global(psrs, ds.powerlaw, ds.hd_orf, 14, T=Tspan, name='gw'))
+
+sampler = gbl.sample
+
+noisedict_red = {p: v for psr in psrs for p,v in psr.noisedict.items() if 'rednoise' in p}
+params = {**ds.sample_uniform(sampler.params), **noisedict_red, 'crn_gamma': 4.3, 'crn_log10_A': -14.5}
+
+key = ds.rngkey(43)
+key, res = sampler(key, params)
+```
