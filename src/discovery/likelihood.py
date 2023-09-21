@@ -92,6 +92,10 @@ class GlobalLikelihood:
     def sample(self):
         if self.globalgp is None:
             sls = [psl.sample for psl in self.psls]
+            if len(sls) == 0:
+                raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
+                    'if you provided them using a generator, it may have been consumed already. ' +
+                    'In that case you can use a list.')
 
             def sampler(key, params):
                 ys = []
@@ -104,6 +108,10 @@ class GlobalLikelihood:
             sampler.params = sorted(set.union(*[set(sl.params) for sl in sls]))
         else:
             sls = [psl.sample for psl in self.psls]
+            if len(sls) == 0:
+                raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
+                    'if you provided them using a generator, it may have been consumed already. ' +
+                    'In that case you can use a list.')
 
             Phi_sample = self.globalgp.Phi.make_sample()
 
@@ -133,6 +141,10 @@ class GlobalLikelihood:
     def logL(self):
         if self.globalgp is None:
             logls = [psl.logL for psl in self.psls]
+            if len(logls) == 0:
+                raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
+                    'if you provided them using a generator, it may have been consumed already. ' +
+                    'In that case you can use a list.')
 
             def loglike(params):
                 return sum(logl(params) for logl in logls)
@@ -141,6 +153,10 @@ class GlobalLikelihood:
         else:
             P_var_inv = self.globalgp.Phi_inv # self.globalgp.Phi.make_inv()
             kterms = [psl.N.make_kernelterms(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
+            if len(kterms) == 0:
+                raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
+                    'if you provided them using a generator, it may have been consumed already. ' +
+                    'In that case you can use a list.')
 
             def loglike(params):
                 terms = [kterm(params) for kterm in kterms]
