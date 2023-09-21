@@ -1,6 +1,8 @@
 import json
+
 import numpy as np
 import pyarrow
+import pyarrow.feather
 
 
 class Pulsar:
