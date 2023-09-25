@@ -1,17 +1,12 @@
 import json
 
 import numpy as np
+import pandas as pd
 import pyarrow
 import pyarrow.feather
 
-
-import json
-
-import pandas as pd
-import pyarrow
-
-def load_chain(fileordir):
-    """Load a Discovery Feather chain or a PTMCMC chain directory to a Pandas table.
+def read_chain(fileordir):
+    """Read a Discovery Feather chain or a PTMCMC chain directory to a Pandas table.
     Look in `attrs` for priors, runtime_info, and noisedict."""
 
     if fileordir.endswith('.feather'):

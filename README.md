@@ -157,3 +157,14 @@ params = {**ds.sample_uniform(sampler.params), **noisedict_red, 'crn_gamma': 4.3
 key = ds.rngkey(43)
 key, res = sampler(key, params)
 ```
+
+To load and save PTMCMC chain files into Pandas tables:
+
+```
+chain = ds.read_chain('PTMCMC_example_output')
+ds.save_chain(chain, 'example_chain.feather')
+chain = ds.read_chain('example_chain.feather')
+```
+
+Note that the resulting Pandas tables will contain useful attributes `chain.attr['noisedict']` (a Python dict), `chain.attr['priors']` (a list of strings), and `chain.attr['runtime_info']` (the `runtime_info.txt` file rendered as a list of strings).
+
