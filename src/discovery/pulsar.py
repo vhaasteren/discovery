@@ -5,6 +5,55 @@ import pyarrow
 import pyarrow.feather
 
 
+import json
+
+import pandas as pd
+import pyarrow
+
+def load_chain(fileordir):
+    """Load a Discovery Feather chain or a PTMCMC chain directory to a Pandas table.
+    Look in `attrs` for priors, runtime_info, and noisedict."""
+
+    if fileordir.endswith('.feather'):
+        table = pyarrow.feather.read_table(fileordir)
+
+        df = table.to_pandas()
+        if b'json' in table.schema.metadata:
+            df.attrs = json.loads(table.schema.metadata[b'json'].decode('ascii'))
+
+        return df
+    else:
+        # we'll assume it's a PTMCMC directory
+
+        pars = list(map(str.strip, open(f'{dirname}/pars.txt', 'r').readlines()))
+
+        df = pd.read_csv(f'{dirname}/chain_1.0.txt', delim_whitespace=True,
+                         names=pars + ['logp', 'logl', 'accept', 'pt'])
+
+        for col in df.columns:
+            df[col] = df[col].astype(np.float32)
+
+        noisedict = {}
+        for line in open(f'{dirname}/runtime_info.txt', 'r'):
+            if 'Constant' in line:
+                t, v = line.split('=')
+                n, c = line.split(':')
+                noisedict[n] = float(v)
+
+        df.attrs['priors'] = list(map(str.strip, open(f'{dirname}/priors.txt', 'r').readlines())),
+        df.attrs['runtime_info'] = list(map(str.strip, open(f'{dirname}/runtime_info.txt', 'r').readlines())),
+        df.attrs['noisedict'] = noisedict
+
+        return df
+
+def save_chain(df, filename):
+    """Saves Pandas chain table to Feather, preserving `attrs` in `schema.metadata['json']`."""
+
+    table = pyarrow.Table.from_pandas(df)
+    table = table.replace_schema_metadata({**table.schema.metadata, 'json': json.dumps(df.attrs)})
+    pyarrow.feather.write_feather(table, filename)
+
+
 class Pulsar:
     # notes: currently ignores _isort/__isort and gets sorted versions
 
