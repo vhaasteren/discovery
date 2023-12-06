@@ -137,6 +137,37 @@ class GlobalLikelihood:
 
         return sampler
 
+    # design the OS
+    # rho_ij = y_i Cmi(theta) Fi Phi Ftj Cmj(theta) y_j
+    # sigma_ij = tr Fti Cmi(theta) Fi Phi Ftj Cmj(theta) Fj Phi
+    @functools.cached_property
+    def os(self):
+        if self.globalgp is None:
+            raise ValueError('GlobalLikelihood.os needs a globalgp.')
+        else:
+            pairs, angles = self.globalgp.pairs, self.globalgp.angles
+            kernelsolves = [psl.N.make_kernelsolve(psl.y, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.F)]
+            # components = self.globalgp.Fs[0].shape[1]
+            getsN = self.globalgp.Phi.make_sqrt()
+
+            def rhosigma(params):
+                sN = getsN(params)
+                ks = [k(params) for k in kernelsolves]
+
+                ts = [matrix.jnp.dot(sN * ks[i][0], sN * ks[j][0]) for (i,j) in pairs]
+
+                ds = [sN[:,matrix.jnp.newaxis] * k[1] * sN[matrix.jnp.newaxis,:] for k in ks]
+                bs = [matrix.jnp.trace(ds[i] @ ds[j]) for (i,j) in pairs]
+
+                return (matrix.jnp.array(ts) / matrix.jnp.array(bs),
+                        1.0 / matrix.jnp.sqrt(matrix.jnp.array(bs)))
+
+            rhosigma.params = sorted(set.union(*[set(k.params) for k in kernelsolves], getsN.params))
+            rhosigma.pairs = pairs
+            rhosigma.angles = angles
+
+            return rhosigma
+
     @functools.cached_property
     def logL(self):
         if self.globalgp is None:
@@ -151,7 +182,7 @@ class GlobalLikelihood:
 
             loglike.params = sorted(set.union(*[set(logl.params) for logl in logls]))
         else:
-            P_var_inv = self.globalgp.Phi_inv # self.globalgp.Phi.make_inv()
+            P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
             kterms = [psl.N.make_kernelterms(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
             if len(kterms) == 0:
                 raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
@@ -172,3 +203,38 @@ class GlobalLikelihood:
             loglike.params = sorted(set.union(*[set(kterm.params) for kterm in kterms])) + P_var_inv.params
 
         return loglike
+
+    def conditional(self):
+        if self.globalgp is None:
+            raise ValueError("Nothing to predict in GlobalLikelihood without a globalgp!")
+        else:
+            P_var_inv = self.globalgp.Phi_inv
+            ksolves = [psl.N.make_kernelsolve(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
+            if len(kterms) == 0:
+                raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
+                    'if you provided them using a generator, it may have been consumed already. ' +
+                    'In that case you can use a list.')
+
+            def cond(params):
+                solves = [ksolve(params) for ksolve in ksolves]
+
+                FtNmy = matrix.jnp.concatenate([term[0] for term in solves])
+
+                Pinv, _ = P_var_inv(params)
+                Sm = Pinv + matrix.jsp.linalg.block_diag(*[term[2] for term in terms])
+
+                # the variance of the normal is S = Sm^-1; but if we want normal deviates y
+                # with that variance, we can use the Cholesky decomposition
+                # S = L L^T => Sm = L^-T L^-1, and then solve L^-T y = x for randn x
+                # where cf = L^-1. See enterprise/signals/utils.py:ConditionalGP
+
+                # to get the actual covariance, one would use cho_solve(cf, identity matrix)
+
+                cf = matrix.jsp.linalg.cho_factor(Sm)
+                mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+
+                return mu, cf
+
+            cond.params = sorted(set.union(*[set(kterm.params) for kterm in kterms])) + P_var_inv.params
+
+        return cond

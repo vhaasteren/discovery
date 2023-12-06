@@ -1,5 +1,4 @@
-import functools
-import operator
+import re
 
 import numpy as np
 
@@ -13,17 +12,18 @@ def uniform(par, a, b):
     return logpriorfunc
 
 priordict_standard = {
-    'rednoise_log10_A': [-18, -11],
-    'rednoise_gamma': [0, 7],
-    'red_noise_log10_A': [-18, -11],
-    'red_noise_gamma': [0, 7],
+    '.*_rednoise_log10_A': [-18, -11],
+    '.*_rednoise_gamma': [0, 7],
+    '.*_red_noise_log10_A': [-18, -11],  # deprecated
+    '.*_red_noise_gamma': [0, 7],        # deprecated
     'crn_log10_A': [-18, -11],
     'crn_gamma': [0, 7],
-    'gw_log10_A': [-18, -11],
-    'gw_gamma': [0, 7],
+    'gw_(.*_)?log10_A': [-18, -11],
+    'gw_(.*_)?gamma': [0, 7],
     'dmgp_log10_A': [-20, -11],
     'dmgp_gamma': [0, 7],
-    'log10_rho': [-9, -4]
+    'crn_log10_rho': [-9, -4],
+    'gw_(.*_)?log10_rho': [-9, -4]
 }
 
 def makelogprior_uniform(params, priordict={}):
@@ -47,7 +47,7 @@ def sample_uniform(params, priordict={}, n=1):
     sample = {}
     for par in params:
         for parname, range in priordict.items():
-            if parname in par:
+            if re.match(parname, par):
                 if par.endswith(')'):
                     sample[par] = (np.random.uniform(*range, size=int(par[par.index('(')+1:-1])) if n == 1
                                    else np.random.uniform(*range, size=(n,int(par[par.index('(')+1:-1]))))

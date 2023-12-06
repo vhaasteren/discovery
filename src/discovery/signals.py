@@ -1,3 +1,4 @@
+import re
 import inspect
 import typing
 from collections.abc import Iterable
@@ -202,32 +203,97 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
 
 # Global Fourier GP
 
-def makegp_fourier_global(psrs, prior, orf, components, T, fourierbasis=fourierbasis, name='globalFourierGP'):
+def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourierbasis, name='globalFourierGP'):
+    priors = priors if isinstance(priors, list) else [priors]
+    orfs   = orfs   if isinstance(orfs, list)   else [orfs]
+
+    argmaps = []
+    for prior, orf in zip(priors, orfs):
+        argspec = inspect.getfullargspec(prior)
+        priorname = f'{name}' if len(priors) == 1 else f'{name}_{re.sub("_", "", orf.__name__)}'
+        argmaps.append([f'{priorname}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+                        for arg in argspec.args if arg not in ['f', 'df']])
+
+    fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
+    f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
+
+    orfmats = [matrix.jnparray([[orf(p1.pos, p2.pos) for p1 in psrs] for p2 in psrs]) for orf in orfs]
+
+    if len(priors) == 1 and len(orfs) == 1:
+        prior, orfmat, argmap = priors[0], orfmats[0], argmaps[0]
+
+        def priorfunc(params):
+            phidiag = prior(f, df, *[params[arg] for arg in argmap])
+
+            return jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfmat])
+        priorfunc.params = argmap
+
+        invorfs, invlogdet = jnp.linalg.inv(orfmat), 1.0 / jnp.linalg.slogdet(orfmat)[1]
+        def invprior(params):
+            invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
+
+            return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorfs]),
+                    jnp.sum(invlogdet + len(invphidiag) * jnp.log(invphidiag)))
+        invprior.params = argmap
+    else:
+        def priorfunc(params):
+            phidiags = [prior(f, df, *[params[arg] for arg in argmap]) for prior, argmap in zip(priors, argmaps)]
+
+            return sum(jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfmat])
+                    for phidiag, orfmat in zip(phidiags, orfmats))
+        priorfunc.params = sorted(set.union(*[set(argmap) for argmap in argmaps]))
+
+        invprior = None
+
+    return matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, invprior)
+
+
+# alternative Fourier GP object for OS (will it work if `prior` has no arguments?)
+
+def makegps_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, name='gw'):
     argspec = inspect.getfullargspec(prior)
     argmap = [f'{name}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
               for arg in argspec.args if arg not in ['f', 'df']]
 
     fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
-    orfmat = np.array([[orf(p1.pos, p2.pos) for p1 in psrs] for p2 in psrs], dtype='d')
 
-    orfs = matrix.jnparray(orfmat)
     f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
-    def priorfunc(params):
-        phidiag = prior(f, df, *[params[arg] for arg in argmap])
 
-        return jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfs])
+    def priorfunc(params):
+        return prior(f, df, *[params[arg] for arg in argmap])
     priorfunc.params = argmap
 
-    invorfs, invlogdet = matrix.jnparray(np.linalg.inv(orfmat)), 1.0 / jnp.linalg.slogdet(orfmat)[1]
-    def invprior(params):
-        invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
+    gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats)
+    gp.psrspos = [psr.pos for psr in psrs]
 
-        return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorfs]),
-                jnp.sum(invlogdet + len(invphidiag) * jnp.log(invphidiag)))
-    invprior.params = argmap
+    return gp
 
-    # maybe make this a GlobalVariableGP
-    return matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, invprior)
+# make Fourier GP object for OS
+
+def makegp_fourier_os(psrs, prior, components, T, noisedict={}, fourierbasis=fourierbasis, name='gw'):
+    argspec = inspect.getfullargspec(prior)
+    argmap = [f'{name}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+              for arg in argspec.args if arg not in ['f', 'df']]
+
+    fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
+
+    f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
+
+    if all(par in noisedict for par in argmap):
+        phidiag = prior(f, df, *[noisedict[arg] for arg in argmap])
+
+        osgp = matrix.ConstantGP(matrix.NoiseMatrix1D_novar(phidiag), fmats)
+    else:
+        def priorfunc(params):
+            return prior(f, df, *[params[arg] for arg in argmap])
+        priorfunc.params = argmap
+
+        osgp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats)
+
+    osgp.pairs  = [(i1, i2) for i1 in range(len(psrs)) for i2 in range(i1 + 1, len(psrs))]
+    osgp.angles = [np.dot(psrs[i1].pos, psrs[i2].pos) for (i1, i2) in osgp.pairs]
+
+    return osgp
 
 
 # priors: these need to be jax functions
@@ -237,6 +303,7 @@ def powerlaw(f, df, log10_A, gamma):
 
 def freespectrum(f, df, log10_rho: typing.Sequence):
     return jnp.repeat(10.0**(2.0 * log10_rho), 2)
+
 
 # combined red_noise + crn
 

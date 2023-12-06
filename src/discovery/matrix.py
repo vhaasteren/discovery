@@ -107,13 +107,21 @@ class NoiseMatrix1D_novar(ConstantKernel):
 
         def kernelproduct(params={}):
             return product
-
         kernelproduct.params = []
 
         return kernelproduct
 
     def inv(self):
         return np.diag(1.0 / self.N), self.ld
+
+    def make_sqrt(self):
+        sN = jnp.sqrt(self.N)
+
+        def sqrt(params={}):
+            return sN
+        sqrt.params = []
+
+        return sqrt
 
     def solve_1d(self, y):
         return y / self.N, self.ld
@@ -169,6 +177,15 @@ class NoiseMatrix1D_var(VariableKernel):
         inv.params = getN.params
 
         return inv
+
+    def make_sqrt(self):
+        getN = self.getN
+
+        def sqrt(params):
+            return jnp.sqrt(getN(params))
+        sqrt.params = getN.params
+
+        return sqrt
 
     def make_sample(self):
         getN = self.getN
@@ -353,6 +370,43 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         kernel.params = delay.params + P_var_inv.params
 
         return kernel
+
+    # similar to make_kernelterms... unify?
+    def make_kernelsolve(self, y, T):
+        # Tt Sigma y = Tt (N + F P Ft) y
+        # Tt Sigma^-1 y = Tt (Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm) y
+        #               = Tt Nm y - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm y
+        # Tt Sigma^-1 T = Tt Nm T - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm T
+
+        Nmy, _ = self.N.solve_1d(y)
+        FtNmy  = self.F.T @ Nmy
+        TtNmy  = T.T @ Nmy
+
+        NmT, _ = self.N.solve_2d(T)
+        FtNmT  = self.F.T @ NmT
+        TtNmT  = T.T @ NmT
+
+        NmF, _ = self.N.solve_2d(self.F)
+        FtNmF = self.F.T @ NmF
+        TtNmF = T.T @ NmF
+
+        FtNmF, TtNmy = jnparray(FtNmF), jnparray(TtNmy)
+        FtNmT, TtNmT = jnparray(FtNmT), jnparray(TtNmT)
+        TtNmF, FtNmy = jnparray(TtNmF), jnparray(FtNmy)
+        P_var_inv = self.P_var.make_inv()
+
+        def kernelsolve(params):
+            Pinv, _ = P_var_inv(params)
+            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
+
+            TtSy = TtNmy - TtNmF @ jsp.linalg.cho_solve(cf, FtNmy)
+            TtST = TtNmT - TtNmF @ jsp.linalg.cho_solve(cf, FtNmT)
+
+            return TtSy, TtST
+
+        kernelsolve.params = P_var_inv.params
+
+        return kernelsolve
 
     def make_kernelproduct(self, y):
         NmF, ldN = self.N.solve_2d(self.F)
