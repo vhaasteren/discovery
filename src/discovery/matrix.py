@@ -70,14 +70,25 @@ def CompoundGP(gplist):
         PhiN = np.concatenate([gp.Phi.N for gp in gplist])
 
         return ConstantGP(NoiseMatrix1D_novar(PhiN), F)
-    elif all(isinstance(gp, VariableGP) for gp in gplist) and all(isinstance(gp.Phi, NoiseMatrix1D_var) for gp in gplist):
+    elif all(isinstance(gp, VariableGP) for gp in gplist):
         F = np.hstack([gp.F for gp in gplist])
 
-        def Phi(params):
-            return jnp.concatenate([gp.Phi.getN(params) for gp in gplist])
-        Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+        if all(isinstance(gp.Phi, NoiseMatrix1D_var) for gp in gplist):
+            def Phi(params):
+                return jnp.concatenate([gp.Phi.getN(params) for gp in gplist])
+            Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
-        return VariableGP(NoiseMatrix1D_var(Phi), F)
+            return VariableGP(NoiseMatrix1D_var(Phi), F)
+        elif all(isinstance(gp.Phi, (NoiseMatrix1D_var, NoiseMatrix2D_var)) for gp in gplist):
+            def Phi(params):
+                # Phis = [Phifunc(params) for Phifunc in Phifuncs]
+                # return jsp.linalg.block_diag(*Phis)
+                return jsp.linalg.block_diag(*[jnp.diag(gp.Phi.getN(params)) if isinstance(gp.Phi, NoiseMatrix1D_var)
+                                                                             else gp.Phi.getN(params)
+                                               for gp in gplist])
+            Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+
+            return VariableGP(NoiseMatrix2D_var(Phi), F)
     else:
         raise NotImplementedError("Cannot concatenate these types of GPs.")
 

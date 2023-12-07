@@ -47,7 +47,7 @@ def sample_uniform(params, priordict={}, n=1):
     sample = {}
     for par in params:
         for parname, range in priordict.items():
-            if re.match(parname, par):
+            if re.match(parname, par) or parname == par:
                 if par.endswith(')'):
                     sample[par] = (np.random.uniform(*range, size=int(par[par.index('(')+1:-1])) if n == 1
                                    else np.random.uniform(*range, size=(n,int(par[par.index('(')+1:-1]))))

@@ -204,24 +204,26 @@ class GlobalLikelihood:
 
         return loglike
 
+    @functools.cached_property
     def conditional(self):
         if self.globalgp is None:
             raise ValueError("Nothing to predict in GlobalLikelihood without a globalgp!")
         else:
             P_var_inv = self.globalgp.Phi_inv
             ksolves = [psl.N.make_kernelsolve(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
-            if len(kterms) == 0:
+            if len(ksolves) == 0:
                 raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
                     'if you provided them using a generator, it may have been consumed already. ' +
                     'In that case you can use a list.')
 
             def cond(params):
+                # each solve is a tuple TtSy, TtST
                 solves = [ksolve(params) for ksolve in ksolves]
 
-                FtNmy = matrix.jnp.concatenate([term[0] for term in solves])
+                FtNmy = matrix.jnp.concatenate([solve[0] for solve in solves])
 
                 Pinv, _ = P_var_inv(params)
-                Sm = Pinv + matrix.jsp.linalg.block_diag(*[term[2] for term in terms])
+                Sm = Pinv + matrix.jsp.linalg.block_diag(*[solve[2] for solve in solves])
 
                 # the variance of the normal is S = Sm^-1; but if we want normal deviates y
                 # with that variance, we can use the Cholesky decomposition
@@ -235,6 +237,6 @@ class GlobalLikelihood:
 
                 return mu, cf
 
-            cond.params = sorted(set.union(*[set(kterm.params) for kterm in kterms])) + P_var_inv.params
+            cond.params = sorted(set.union(*[set(ksolve.params) for ksolve in ksolves])) + P_var_inv.params
 
         return cond
