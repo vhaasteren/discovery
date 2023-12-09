@@ -34,7 +34,6 @@ def makelogprior_uniform(params, priordict={}):
     priors = []
     for par in params:
         for parname, range in priordict.items():
-            print(parname, par, re.match(parname, par))
             if re.match(parname, par):
                 priors.append(uniform(par, *range))
                 break
