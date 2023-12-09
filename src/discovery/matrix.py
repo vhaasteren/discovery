@@ -65,11 +65,19 @@ def CompoundGP(gplist):
     if len(gplist) == 1:
         return gplist[0]
 
-    if all(isinstance(gp, ConstantGP) for gp in gplist) and all(isinstance(gp.Phi, NoiseMatrix1D_novar) for gp in gplist):
-        F = np.hstack([gp.F for gp in gplist])
-        PhiN = np.concatenate([gp.Phi.N for gp in gplist])
+    if all(isinstance(gp, ConstantGP) for gp in gplist):
+        if all(isinstance(gp.Phi, NoiseMatrix1D_novar) for gp in gplist):
+            F = np.hstack([gp.F for gp in gplist])
+            PhiN = np.concatenate([gp.Phi.N for gp in gplist])
 
-        return ConstantGP(NoiseMatrix1D_novar(PhiN), F)
+            return ConstantGP(NoiseMatrix1D_novar(PhiN), F)
+        elif all(isinstance(gp.Phi, (NoiseMatrix1D_novar, NoiseMatrix2D_novar)) for gp in gplist):
+            F = np.hstack([gp.F for gp in gplist])
+            PhiN = sp.linalg.block_diag(*[np.diag(gp.Phi.N) if isinstance(gp.Phi, NoiseMatrix1D_novar)
+                                                            else gp.Phi.N
+                                          for gp in gplist])
+
+            return ConstantGP(NoiseMatrix2D_novar(PhiN), F)
     elif all(isinstance(gp, VariableGP) for gp in gplist):
         F = np.hstack([gp.F for gp in gplist])
 
@@ -211,6 +219,17 @@ class NoiseMatrix1D_var(VariableKernel):
         sample.params = getN.params
 
         return sample
+
+
+class NoiseMatrix2D_novar(ConstantKernel):
+    def __init__(self, N):
+        self.N = N
+
+        self.invN = jnp.linalg.inv(N)
+        self.ld = jnp.linalg.slogdet(N)[1]
+
+    def inv(self):
+        return self.invN, self.ld
 
 
 class NoiseMatrix2D_var(VariableKernel):

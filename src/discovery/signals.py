@@ -186,8 +186,7 @@ def dmfourierbasis(psr, components, T=None, fref=1400.0):
 
     return f, df, fmat * Dm[:, None]
 
-# a solution based on future typing extensions would be better than priordim
-def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, priordim=1, common=[], name='fourierGP'):
+def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='fourierGP'):
     argspec = inspect.getfullargspec(prior)
     argmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
               (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
@@ -200,7 +199,35 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, pr
         return prior(f, df, *[params[arg] for arg in argmap])
     priorfunc.params = argmap
 
-    return matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc) if priordim == 1 else matrix.NoiseMatrix2D_var(priorfunc), fmat)
+    return matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmat)
+
+# component-wise GP
+
+def makegp_fourier_delay(psr, components, T=None, name='fourierGP'):
+    argname = f'{psr.name}_{name}_mean({components*2})'
+
+    _, _, fmat = fourierbasis(psr, components, T)
+    Fmat = matrix.jnparray(fmat)
+
+    def delayfunc(params):
+        return matrix.jnp.dot(Fmat, params[argname])
+    delayfunc.params = [argname]
+
+    return delayfunc
+
+def makegp_fourier_variance(psr, components, T=None, name='fourierGP', noisedict={}):
+    argname = f'{psr.name}_{name}_variance({components*2},{components*2})'
+
+    _, _, fmat = fourierbasis(psr, components, T)
+
+    if argname in noisedict:
+        return matrix.ConstantGP(matrix.NoiseMatrix2D_novar(noisedict[argname]), fmat)
+    else:
+        def priorfunc(params):
+            return params[argname]
+        priorfunc.params = [argname]
+
+        return matrix.VariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmat)
 
 # Global Fourier GP
 

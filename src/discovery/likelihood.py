@@ -223,7 +223,7 @@ class GlobalLikelihood:
                 FtNmy = matrix.jnp.concatenate([solve[0] for solve in solves])
 
                 Pinv, _ = P_var_inv(params)
-                Sm = Pinv + matrix.jsp.linalg.block_diag(*[solve[2] for solve in solves])
+                Sm = Pinv + matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
 
                 # the variance of the normal is S = Sm^-1; but if we want normal deviates y
                 # with that variance, we can use the Cholesky decomposition
