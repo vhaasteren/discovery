@@ -54,6 +54,7 @@ _Discovery_ uses lightweight `Pulsar` objects saved as Arrow Feather files. To c
 - `GlobalLikelihood(psls, globalgp=None)`: returns `GlobalLikelihood` object, with a `logL` property that implements the multi-pulsar likelihood as a JAX-ready function. The likelihood takes as a single argument a dictionary of parameters. Here `psls` is an iterable that may contain any number of `PulsarLikelihood` objects, and `globalgp` is a `GlobalVariableGP` object, such as returned by `makegp_fourier_global`, encoding a joint GP for all pulsars.
 
 - The two likelihood objects have a `sample` property—a JAX-ready function that generates a random realization of the data if given a JAX key and a dictionary of parameters. (According to JAX protocol, `sample` actually return a tuple consisting of the "split" key and the data realization.)
+- The `GlobalLikelihood` object has a `conditional` property—a JAX-ready function that returns a tuple: the mean coefficients `mu` of the `globalgp` given the parameters, and the result `cf` of running `scipy.linalg.cho_factor` on the matrix `Phi^-1 + T^t K T`, where `Phi` and `T` are prior and basis of `globalgp`. Conditional normal draws are then obtained as `mu + y` after solving `cf y = x` for a normal deviate `x`. To get the actual covariance matrix, one would use `cho_solve(cf, identity)`.
 
 ## Priors (`prior.py`)
 
