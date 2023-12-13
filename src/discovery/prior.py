@@ -39,8 +39,6 @@ def makelogprior_uniform(params, priordict={}):
                 break
 
     def logprior(params):
-        print(params)
-        print([prior(params) for prior in priors])
         return sum(prior(params) for prior in priors)
 
     return logprior
