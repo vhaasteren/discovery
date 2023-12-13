@@ -86,7 +86,8 @@ class PulsarLikelihood:
 
 class GlobalLikelihood:
     def __init__(self, psls, globalgp=None):
-        self.psls, self.globalgp = psls, globalgp
+        self.psls = psls
+        self.globalgp = matrix.CompoundGlobalGP(globalgp) if isinstance(globalgp, list) else globalgp
 
     @functools.cached_property
     def sample(self):

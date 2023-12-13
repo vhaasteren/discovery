@@ -60,6 +60,26 @@ class GlobalVariableGP:
     def __init__(self, Phi, Fs, Phi_inv=None):
         self.Phi, self.Fs, self.Phi_inv = Phi, Fs, Phi_inv
 
+def CompoundGlobalGP(gplist):
+    if all(isinstance(gp, GlobalVariableGP) for gp in gplist):
+        fmats = [np.hstack(F) for F in zip(*[gp.Fs for gp in gplist])]
+
+        def priorfunc(params):
+            return jsp.linalg.block_diag(*[jnp.diag(gp.Phi.getN(params)) if isinstance(gp.Phi, NoiseMatrix1D_var)
+                                                                         else gp.Phi.getN(params)
+                                           for gp in gplist])
+        priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+
+        def invprior(params):
+            ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
+            return jsp.linalg.block_diag(*[jnp.diag(p) if isinstance(gp.Phi, NoiseMatrix1D_var) else p
+                                           for p, gp in zip(ps,gplist)]), sum(ls)
+        invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
+
+        return GlobalVariableGP(NoiseMatrix2D_var(priorfunc), fmats, invprior)
+    else:
+        raise NotImplementedError("Cannot concatenate these types of GlobalGPs.")
+
 # concatenate GPs
 def CompoundGP(gplist):
     if len(gplist) == 1:
@@ -316,10 +336,37 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         # closes on product
         def kernelproduct(params={}):
             return product
-
         kernelproduct.params = []
 
         return kernelproduct
+
+    def make_kernelsolve(self, y, T):
+        # Tt Sigma y = Tt (N + F P Ft) y
+        # Tt Sigma^-1 y = Tt (Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm) y
+        #               = Tt Nm y - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm y
+        # Tt Sigma^-1 T = Tt Nm T - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm T
+
+        Nmy, _ = self.N.solve_1d(y)
+        FtNmy  = self.F.T @ Nmy
+        TtNmy  = T.T @ Nmy
+
+        NmT, _ = self.N.solve_2d(T)
+        FtNmT  = self.F.T @ NmT
+        TtNmT  = T.T @ NmT
+
+        NmF, _ = self.N.solve_2d(self.F)
+        FtNmF = self.F.T @ NmF
+        TtNmF = T.T @ NmF
+
+        TtSy = jnparray(TtNmy - TtNmF @ sp.linalg.cho_solve(self.cf, FtNmy))
+        TtST = jnparray(TtNmT - TtNmF @ sp.linalg.cho_solve(self.cf, FtNmT))
+
+        # closes on TtSy and TtST
+        def kernelsolve(params={}):
+            return TtSy, TtST
+        kernelsolve.params = []
+
+        return kernelsolve
 
     def solve_1d(self, y):
         return self.N.solve_1d(y)[0] - self.NmF @ sp.linalg.cho_solve(self.cf, self.NmF.T @ y), self.ld

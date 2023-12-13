@@ -201,6 +201,8 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
 
     return matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmat)
 
+
+
 # component-wise GP
 
 def makegp_fourier_delay(psr, components, T=None, name='fourierGP'):
@@ -230,6 +232,26 @@ def makegp_fourier_variance(psr, components, T=None, name='fourierGP', noisedict
         return matrix.VariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmat)
 
 # Global Fourier GP
+
+def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierbasis, name='allpsrFourierGP'):
+    argspec = inspect.getfullargspec(prior)
+    argmaps = [[f'{psr.name}_{name}_{arg}' + (f'({components})'
+                                              if argspec.annotations.get(arg) == typing.Sequence else '')
+                for arg in argspec.args if arg not in ['f', 'df']] for psr in psrs]
+
+    fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
+    f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
+
+    def priorfunc(params):
+        return jnp.concatenate([prior(f, df, *[params[arg] for arg in argmap]) for argmap in argmaps])
+    priorfunc.params = sum(argmaps, [])
+
+    def invprior(params):
+        p = priorfunc(params)
+        return 1.0 / p, jnp.sum(jnp.log(p))
+    invprior.params = priorfunc.params
+
+    return matrix.GlobalVariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats, invprior)
 
 def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourierbasis, name='globalFourierGP'):
     priors = priors if isinstance(priors, list) else [priors]
