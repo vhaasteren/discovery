@@ -64,19 +64,31 @@ def CompoundGlobalGP(gplist):
     if all(isinstance(gp, GlobalVariableGP) for gp in gplist):
         fmats = [np.hstack(F) for F in zip(*[gp.Fs for gp in gplist])]
 
-        def priorfunc(params):
-            return jsp.linalg.block_diag(*[jnp.diag(gp.Phi.getN(params)) if isinstance(gp.Phi, NoiseMatrix1D_var)
-                                                                         else gp.Phi.getN(params)
-                                           for gp in gplist])
-        priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+        if all(isinstance(gp.Phi, NoiseMatrix1D_var) for gp in gplist):
+            def priorfunc(params):
+                return jnp.diag(jnp.concatenate([gp.Phi.getN(params) for gp in gplist]))
+            priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
-        def invprior(params):
-            ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
-            return jsp.linalg.block_diag(*[jnp.diag(p) if isinstance(gp.Phi, NoiseMatrix1D_var) else p
-                                           for p, gp in zip(ps,gplist)]), sum(ls)
-        invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
+            def invprior(params):
+                ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
+                return jnp.diag(jnp.concatenate(ps)), sum(ls)
+            invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
 
-        return GlobalVariableGP(NoiseMatrix2D_var(priorfunc), fmats, invprior)
+            return GlobalVariableGP(NoiseMatrix1D_var(priorfunc), fmats, invprior)
+        else:
+            def priorfunc(params):
+                return jsp.linalg.block_diag(*[jnp.diag(gp.Phi.getN(params)) if isinstance(gp.Phi, NoiseMatrix1D_var)
+                                                                             else gp.Phi.getN(params)
+                                            for gp in gplist])
+            priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+
+            def invprior(params):
+                ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
+                return jsp.linalg.block_diag(*[jnp.diag(p) if isinstance(gp.Phi, NoiseMatrix1D_var) else p
+                                             for p, gp in zip(ps, gplist)]), sum(ls)
+            invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
+
+            return GlobalVariableGP(NoiseMatrix2D_var(priorfunc), fmats, invprior)
     else:
         raise NotImplementedError("Cannot concatenate these types of GlobalGPs.")
 

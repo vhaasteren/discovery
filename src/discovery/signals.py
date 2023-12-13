@@ -233,10 +233,10 @@ def makegp_fourier_variance(psr, components, T=None, name='fourierGP', noisedict
 
 # Global Fourier GP
 
-def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierbasis, name='allpsrFourierGP'):
+def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='allpsrFourierGP'):
     argspec = inspect.getfullargspec(prior)
-    argmaps = [[f'{psr.name}_{name}_{arg}' + (f'({components})'
-                                              if argspec.annotations.get(arg) == typing.Sequence else '')
+    argmaps = [[(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
+                (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
                 for arg in argspec.args if arg not in ['f', 'df']] for psr in psrs]
 
     fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
