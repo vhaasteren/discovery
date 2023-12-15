@@ -13,9 +13,9 @@ def uniform(par, a, b):
 
 
 priordict_standard = {
-    ".*_rednoise_log10_A": [-18, -11],
+    ".*_rednoise_log10_A": [-20, -11],
     ".*_rednoise_gamma": [0, 7],
-    ".*_red_noise_log10_A": [-18, -11],  # deprecated
+    ".*_red_noise_log10_A": [-20, -11],  # deprecated
     ".*_red_noise_gamma": [0, 7],  # deprecated
     "crn_log10_A": [-18, -11],
     "crn_gamma": [0, 7],
