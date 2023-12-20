@@ -278,12 +278,13 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
             return jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfmat])
         priorfunc.params = argmap
 
-        invorfs, invlogdet = jnp.linalg.inv(orfmat), 1.0 / jnp.linalg.slogdet(orfmat)[1]
+        invorfs, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
         def invprior(params):
             invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
 
             return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorfs]),
-                    jnp.sum(invlogdet + len(invphidiag) * jnp.log(invphidiag)))
+                    orflogdet - jnp.sum(jnp.log(invphidiag)))
+                    # WRONG: jnp.sum(invlogdet + len(invphidiag) * jnp.log(invphidiag)))
         invprior.params = argmap
     else:
         def priorfunc(params):
@@ -404,6 +405,18 @@ def makedelay(psr, delay, common=[], name='delay'):
 
     def delayfunc(params):
         return delay(*[params[arg] for arg in argmap])
+    delayfunc.params = argmap
+
+    return delayfunc
+
+# standard parameters t, pos, d;
+def makedelay_deterministic(psr, delay, name='deterministic'):
+    argspec = inspect.getfullargspec(prior)
+    argmap = [f'{name}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+              for arg in argspec.args if arg not in ['t', 'pos', 'd']]
+
+    def delayfunc(params):
+        return delay(t, pos, d, *[params[arg] for arg in argmap])
     delayfunc.params = argmap
 
     return delayfunc
