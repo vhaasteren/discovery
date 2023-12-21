@@ -278,13 +278,12 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
             return jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfmat])
         priorfunc.params = argmap
 
-        invorfs, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
+        invorf, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
         def invprior(params):
             invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
 
-            return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorfs]),
-                    orflogdet - jnp.sum(jnp.log(invphidiag)))
-                    # WRONG: jnp.sum(invlogdet + len(invphidiag) * jnp.log(invphidiag)))
+            return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorf]),
+                    len(invphidiag) * orflogdet - len(orfmat) * jnp.sum(jnp.log(invphidiag)))
         invprior.params = argmap
     else:
         def priorfunc(params):
