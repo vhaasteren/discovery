@@ -104,7 +104,7 @@ def makegp_ecorr_simple(psr, noisedict={}):
         return matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), Umat)
 
 # nanograv backends
-def makegp_ecorr(psr, noisedict={}):
+def makegp_ecorr(psr, noisedict={}, enterprise=False):
     log10_ecorrs, Umats = [], []
 
     backends = sorted(set(psr.backend_flags))
@@ -112,8 +112,16 @@ def makegp_ecorr(psr, noisedict={}):
     for backend, mask in zip(backends, masks):
         log10_ecorrs.append(f'{psr.name}_{backend}_log10_ecorr')
 
+        # TOAs that do not belong to this mask get index zero, which is ignored below.
+        # This will fail if there's only one mask that covers all TOAs
         bins = quantize(psr.toas * mask)
-        Umats.append(np.vstack([bins == i for i in range(1, bins.max() + 1)]).T)
+
+        if enterprise:
+            # legacy accounting of degrees of freedom
+            uniques, counts = np.unique(quantize(psr.toas * mask), return_counts=True)
+            Umats.append(np.vstack([bins == i for i, cnt in zip(uniques[1:], counts[1:]) if cnt > 1]).T)
+        else:
+            Umats.append(np.vstack([bins == i for i in range(1, bins.max() + 1)]).T)
     Umatall = np.hstack(Umats)
     params = log10_ecorrs
 
@@ -374,6 +382,9 @@ def makepowerlaw_crn(components):
     return powerlaw_crn
 
 # ORFs: OK as numpy functions
+
+def uncorrelated_orf(pos1, pos2):
+    return 1.0 if np.all(pos1 == pos2) else 0.0
 
 def hd_orf(pos1, pos2):
     if np.all(pos1 == pos2):
