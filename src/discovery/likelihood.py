@@ -213,9 +213,8 @@ class GlobalLikelihood:
         def sample_cond(key, params):
             mu, cf = cond(params)
 
-            # conditional normal draws are then obtained as `mu + y` after solving `cf y = x` for a normal deviate `x`
+            # conditional normal draws are obtained as `mu + y` after solving `cf.T y = x` for a normal deviate `x`
             key, subkey = matrix.jnpsplit(key)
-            # c = mu + matrix.jsp.linalg.cho_solve(cf, matrix.jnpnormal(subkey, mu.shape))
             c = mu + matrix.jsp.linalg.solve_triangular(cf[0].T, matrix.jnpnormal(subkey, mu.shape), lower=False)
 
             return key, {par: c[sli] for par, sli in index.items()}
