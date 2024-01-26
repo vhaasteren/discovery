@@ -259,7 +259,11 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
         return 1.0 / p, jnp.sum(jnp.log(p))
     invprior.params = priorfunc.params
 
-    return matrix.GlobalVariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats, invprior)
+    gp = matrix.GlobalVariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats, invprior)
+    gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
+                slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
+
+    return gp
 
 def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourierbasis, name='globalFourierGP'):
     priors = priors if isinstance(priors, list) else [priors]
@@ -283,27 +287,38 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
         def priorfunc(params):
             phidiag = prior(f, df, *[params[arg] for arg in argmap])
 
-            return jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfmat])
+            # the jnp.dot handles the "pixel basis" case where the elements of orfmat are n-vectors
+            # and phidiag is an (m x n)-matrix; here n is the number of pixels and m of Fourier components
+            return jnp.block([[jnp.diag(jnp.dot(phidiag, val)) for val in row] for row in orfmat])
         priorfunc.params = argmap
 
-        invorf, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
-        def invprior(params):
-            invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
+        # if we're not in the pixel-basis case we can take a shortcut in making the inverse
+        if orfmat.ndim == 2:
+            invorf, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
+            def invprior(params):
+                invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
 
-            return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorf]),
-                    len(invphidiag) * orflogdet - len(orfmat) * jnp.sum(jnp.log(invphidiag)))
-        invprior.params = argmap
+                return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorf]),
+                        len(invphidiag) * orflogdet - len(orfmat) * jnp.sum(jnp.log(invphidiag)))
+            invprior.params = argmap
+        else:
+            invprior = None
     else:
         def priorfunc(params):
             phidiags = [prior(f, df, *[params[arg] for arg in argmap]) for prior, argmap in zip(priors, argmaps)]
 
             return sum(jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfmat])
-                    for phidiag, orfmat in zip(phidiags, orfmats))
+                       for phidiag, orfmat in zip(phidiags, orfmats))
         priorfunc.params = sorted(set.union(*[set(argmap) for argmap in argmaps]))
 
         invprior = None
 
-    return matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, invprior)
+    gp = matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, invprior)
+    gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
+                slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
+
+    return gp
+
 
 
 # alternative Fourier GP object for OS (will it work if `prior` has no arguments?)

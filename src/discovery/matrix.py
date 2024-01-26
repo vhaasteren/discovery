@@ -56,6 +56,10 @@ class VariableGP:
     def __init__(self, Phi, F):
         self.Phi, self.F = Phi, F
 
+# note that all factories that return a GlobalVariableGP should define its `index`
+# as a dictionary of component vector names to slices within the Fs matrix, which
+# is used by GlobalLikelihood.sample_conditional to parse out the vectors
+
 class GlobalVariableGP:
     def __init__(self, Phi, Fs, Phi_inv=None):
         self.Phi, self.Fs, self.Phi_inv = Phi, Fs, Phi_inv
@@ -64,33 +68,90 @@ def CompoundGlobalGP(gplist):
     if all(isinstance(gp, GlobalVariableGP) for gp in gplist):
         fmats = [np.hstack(F) for F in zip(*[gp.Fs for gp in gplist])]
 
+        npsr = len(fmats)
+
+        ngps = [gp.Fs[0].shape[1] for gp in gplist]
+        allgp = sum(ngps)
+
+        offsets = [0] + list(np.cumsum(ngps))[:-1]
+
         if all(isinstance(gp.Phi, NoiseMatrix1D_var) for gp in gplist):
             def priorfunc(params):
-                return jnp.diag(jnp.concatenate([gp.Phi.getN(params) for gp in gplist]))
+                ret = jnp.zeros(npsr*allgp, 'd')
+
+                for gp, ngp, offset in zip(gplist, ngps, offsets):
+                    phi = gp.Phi.getN(params)
+
+                    # just look at this craziness... need another code path for numpy
+                    ret = jax.lax.fori_loop(0, npsr, lambda i, ret:
+                            jax.lax.dynamic_update_slice(ret,
+                                                         jax.lax.dynamic_slice(phi, (i*ngp,), (ngp,))
+                                                         (i*allgp + offset,)),
+                            ret)
+
+                    for i in range(npsr):
+                        ret = ret.at[i*allgp+offset:i*allgp+offset+ngp].set(phi[i*ngp:(i+1)*ngp])
+
+                return ret
             priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
-            def invprior(params):
-                ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
-                return jnp.diag(jnp.concatenate(ps)), sum(ls)
-            invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
+            # def invprior(params):
+            #     ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
+            #     return jnp.diag(jnp.concatenate(ps)), sum(ls)
+            # invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
 
-            return GlobalVariableGP(NoiseMatrix1D_var(priorfunc), fmats, invprior)
+            multigp = GlobalVariableGP(NoiseMatrix1D_var(priorfunc), fmats, None) # invprior
         else:
             def priorfunc(params):
-                return jsp.linalg.block_diag(*[jnp.diag(gp.Phi.getN(params)) if isinstance(gp.Phi, NoiseMatrix1D_var)
-                                                                             else gp.Phi.getN(params)
-                                            for gp in gplist])
+                ret = jnp.zeros((npsr*allgp, npsr*allgp), 'd')
+
+                for gp, ngp, offset in zip(gplist, ngps, offsets):
+                    phi = jnp.diag(gp.Phi.getN(params)) if isinstance(gp.Phi, NoiseMatrix1D_var) else gp.Phi.getN(params)
+
+                    ret = jax.lax.fori_loop(0, npsr, lambda i, ret:
+                            jax.lax.fori_loop(0, npsr, lambda j, ret:
+                                jax.lax.dynamic_update_slice(ret,
+                                                             jax.lax.dynamic_slice(phi, (i*ngp, j*ngp), (ngp, ngp)),
+                                                             (i*allgp + offset, j*allgp + offset)),
+                                ret),
+                            ret)
+
+                return ret
+
             priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
             def invprior(params):
+                ret = jnp.zeros((npsr*allgp, npsr*allgp), 'd')
                 ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
-                return jsp.linalg.block_diag(*[jnp.diag(p) if isinstance(gp.Phi, NoiseMatrix1D_var) else p
-                                             for p, gp in zip(ps, gplist)]), sum(ls)
+
+                for p, ngp, offset in zip(ps, ngps, offsets):
+                    phiinv = jnp.diag(p) if p.ndim == 1 else p
+
+                    ret = jax.lax.fori_loop(0, npsr, lambda i, ret:
+                            jax.lax.fori_loop(0, npsr, lambda j, ret:
+                                jax.lax.dynamic_update_slice(ret,
+                                                             jax.lax.dynamic_slice(phiinv, (i*ngp, j*ngp), (ngp, ngp)),
+                                                             (i*allgp + offset, j*allgp + offset)),
+                                ret),
+                            ret)
+
+                return ret, sum(ls)
+
             invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
 
-            return GlobalVariableGP(NoiseMatrix2D_var(priorfunc), fmats, invprior)
+            multigp = GlobalVariableGP(NoiseMatrix2D_var(priorfunc), fmats, invprior)
     else:
         raise NotImplementedError("Cannot concatenate these types of GlobalGPs.")
+
+    index, cnt = {}, 0
+    for vars in zip(*[gp.index.items() for gp in gplist]):
+        for var, sli in vars:
+            width = sli.stop - sli.start
+            index[var] = slice(cnt, cnt + width)
+            cnt = cnt + width
+    multigp.index = index
+
+    return multigp
 
 # concatenate GPs
 def CompoundGP(gplist):

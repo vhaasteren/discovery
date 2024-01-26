@@ -206,11 +206,30 @@ class GlobalLikelihood:
         return loglike
 
     @functools.cached_property
+    def sample_conditional(self):
+        cond = self.conditional
+        index = self.globalgp.index
+
+        def sample_cond(key, params):
+            mu, cf = cond(params)
+
+            # conditional normal draws are then obtained as `mu + y` after solving `cf y = x` for a normal deviate `x`
+            key, subkey = matrix.jnpsplit(key)
+            # c = mu + matrix.jsp.linalg.cho_solve(cf, matrix.jnpnormal(subkey, mu.shape))
+            c = mu + matrix.jsp.linalg.solve_triangular(cf[0].T, matrix.jnpnormal(subkey, mu.shape), lower=False)
+
+            return key, {par: c[sli] for par, sli in index.items()}
+
+        sample_cond.params = cond.params
+
+        return sample_cond
+
+    @functools.cached_property
     def conditional(self):
         if self.globalgp is None:
             raise ValueError("Nothing to predict in GlobalLikelihood without a globalgp!")
         else:
-            P_var_inv = self.globalgp.Phi_inv
+            P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
             ksolves = [psl.N.make_kernelsolve(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
             if len(ksolves) == 0:
                 raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
@@ -224,7 +243,11 @@ class GlobalLikelihood:
                 FtNmy = matrix.jnp.concatenate([solve[0] for solve in solves])
 
                 Pinv, _ = P_var_inv(params)
-                Sm = Pinv + matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
+
+                # phiinv = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv)
+                # tnt = matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
+                # Sm = phiinv + tnt
+                Sm = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv) + matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
 
                 # the variance of the normal is S = Sm^-1; but if we want normal deviates y
                 # with that variance, we can use the Cholesky decomposition
@@ -233,10 +256,11 @@ class GlobalLikelihood:
 
                 # to get the actual covariance, one would use cho_solve(cf, identity matrix)
 
-                cf = matrix.jsp.linalg.cho_factor(Sm)
+                cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
                 mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
 
                 return mu, cf
+                # return mu, cf, phiinv, tnt
 
             cond.params = sorted(set.union(*[set(ksolve.params) for ksolve in ksolves])) + P_var_inv.params
 
