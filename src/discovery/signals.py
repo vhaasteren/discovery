@@ -149,8 +149,11 @@ def makegp_ecorr(psr, noisedict={}, enterprise=False):
 def makegp_improper(psr, fmat, constant=1.0e40, name='improperGP'):
     return matrix.ConstantGP(matrix.NoiseMatrix1D_novar(constant * np.ones(fmat.shape[1])), fmat)
 
-def makegp_timing(psr, constant=None, variance=None):
-    fmat = np.array(psr.Mmat / np.sqrt(np.sum(psr.Mmat**2, axis=0)), dtype=np.float64)
+def makegp_timing(psr, constant=None, variance=None, svd=False):
+    if svd:
+        fmat, _, _ = np.linalg.svd(psr.Mmat, full_matrices=False)
+    else:
+        fmat = np.array(psr.Mmat / np.sqrt(np.sum(psr.Mmat**2, axis=0)), dtype=np.float64)
 
     if variance is None:
         if constant is None:
@@ -298,8 +301,12 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
             def invprior(params):
                 invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
 
+                # |S_ij Gamma_ab| = prod_i (|S_i Gamma_ab|) = prod_i (S_i^npsr |Gamma_ab|)
+                # log |S_ij Gamma_ab| = log (prod_i S_i^npsr) + log prod_i |Gamma_ab|
+                #                     = npsr * sum_i log S_i + nfreqs |Gamma_ab|
+
                 return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorf]),
-                        len(invphidiag) * orflogdet - len(orfmat) * jnp.sum(jnp.log(invphidiag)))
+                        invphidiag.shape[0] * orflogdet - orfmat.shape[0] * jnp.sum(jnp.log(invphidiag)))
             invprior.params = argmap
         else:
             invprior = None

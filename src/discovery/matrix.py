@@ -120,9 +120,11 @@ def CompoundGlobalGP(gplist):
 
             priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
+            phiinvs = [gp.Phi_inv or gp.Phi.make_inv() for gp in gplist]
+
             def invprior(params):
                 ret = jnp.zeros((npsr*allgp, npsr*allgp), 'd')
-                ps, ls = zip(*[gp.Phi_inv(params) for gp in gplist])
+                ps, ls = zip(*[phiinv(params) for phiinv in phiinvs])
 
                 for p, ngp, offset in zip(ps, ngps, offsets):
                     phiinv = jnp.diag(p) if p.ndim == 1 else p
@@ -137,7 +139,7 @@ def CompoundGlobalGP(gplist):
 
                 return ret, sum(ls)
 
-            invprior.params = sorted(set.union(*[set(gp.Phi_inv.params) for gp in gplist]))
+            invprior.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
             multigp = GlobalVariableGP(NoiseMatrix2D_var(priorfunc), fmats, invprior)
     else:
