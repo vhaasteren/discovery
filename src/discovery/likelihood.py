@@ -229,38 +229,55 @@ class GlobalLikelihood:
             raise ValueError("Nothing to predict in GlobalLikelihood without a globalgp!")
         else:
             P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
+            ndim = 1 if isinstance(self.globalgp.Phi, matrix.NoiseMatrix1D_var) else 2
+
             ksolves = [psl.N.make_kernelsolve(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
             if len(ksolves) == 0:
                 raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
                     'if you provided them using a generator, it may have been consumed already. ' +
                     'In that case you can use a list.')
 
-            def cond(params):
-                # each solve is a tuple TtSy, TtST
-                solves = [ksolve(params) for ksolve in ksolves]
-
+            if not ksolves[0].params:
+                solves = [ksolve({}) for ksolve in ksolves]
                 FtNmy = matrix.jnp.concatenate([solve[0] for solve in solves])
+                FtNmF = matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
 
-                Pinv, _ = P_var_inv(params)
+                def cond(params):
+                    Pinv, _ = P_var_inv(params)
+                    Sm = (matrix.jnp.diag(Pinv) if ndim == 1 else Pinv) + FtNmF
+                    cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
+                    mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
 
-                # phiinv = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv)
-                # tnt = matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
-                # Sm = phiinv + tnt
-                Sm = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv) + matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
+                    return mu, cf
 
-                # the variance of the normal is S = Sm^-1; but if we want normal deviates y
-                # with that variance, we can use the Cholesky decomposition
-                # S = L L^T => Sm = L^-T L^-1, and then solve L^-T y = x for randn x
-                # where cf = L^-1. See enterprise/signals/utils.py:ConditionalGP
+                cond.params = P_var_inv.params
+            else:
+                def cond(params):
+                    # each solve is a tuple TtSy, TtST
+                    solves = [ksolve(params) for ksolve in ksolves]
 
-                # to get the actual covariance, one would use cho_solve(cf, identity matrix)
+                    FtNmy = matrix.jnp.concatenate([solve[0] for solve in solves])
 
-                cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
-                mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+                    Pinv, _ = P_var_inv(params)
 
-                return mu, cf
-                # return mu, cf, phiinv, tnt
+                    # phiinv = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv)
+                    # tnt = matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
+                    # Sm = phiinv + tnt
+                    Sm = (matrix.jnp.diag(Pinv) if ndim == 1 else Pinv) + matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
 
-            cond.params = sorted(set.union(*[set(ksolve.params) for ksolve in ksolves])) + P_var_inv.params
+                    # the variance of the normal is S = Sm^-1; but if we want normal deviates y
+                    # with that variance, we can use the Cholesky decomposition
+                    # S = L L^T => Sm = L^-T L^-1, and then solve L^-T y = x for randn x
+                    # where cf = L^-1. See enterprise/signals/utils.py:ConditionalGP
+
+                    # to get the actual covariance, one would use cho_solve(cf, identity matrix)
+
+                    cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
+                    mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+
+                    return mu, cf
+                    # return mu, cf, phiinv, tnt
+
+                cond.params = sorted(set.union(*[set(ksolve.params) for ksolve in ksolves])) + P_var_inv.params
 
         return cond

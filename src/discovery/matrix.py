@@ -168,7 +168,7 @@ def CompoundGP(gplist):
             return ConstantGP(NoiseMatrix1D_novar(PhiN), F)
         elif all(isinstance(gp.Phi, (NoiseMatrix1D_novar, NoiseMatrix2D_novar)) for gp in gplist):
             F = np.hstack([gp.F for gp in gplist])
-            PhiN = sp.linalg.block_diag(*[np.diag(gp.Phi.N) if isinstance(gp.Phi, NoiseMatrix1D_novar)
+            PhiN = jsp.linalg.block_diag(*[np.diag(gp.Phi.N) if isinstance(gp.Phi, NoiseMatrix1D_novar)
                                                             else gp.Phi.N
                                           for gp in gplist])
 
