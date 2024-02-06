@@ -85,7 +85,7 @@ def CompoundGlobalGP(gplist):
                     # just look at this craziness... need another code path for numpy
                     ret = jax.lax.fori_loop(0, npsr, lambda i, ret:
                             jax.lax.dynamic_update_slice(ret,
-                                                         jax.lax.dynamic_slice(phi, (i*ngp,), (ngp,))
+                                                         jax.lax.dynamic_slice(phi, (i*ngp,), (ngp,)),
                                                          (i*allgp + offset,)),
                             ret)
 
@@ -523,14 +523,18 @@ class ShermanMorrisonKernel_varP(VariableKernel):
 
         return kernel
 
-    # similar to make_kernelterms... unify?
+    # makes a function that returns the tuple
+    # - Tt (Phi + Ft Nm F)^-1 y
+    # - Tt (Phi + Ft Nm F)^-1 T
+    # with fixed y and T
+
     def make_kernelsolve(self, y, T):
         # Tt Sigma y = Tt (N + F P Ft) y
         # Tt Sigma^-1 y = Tt (Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm) y
         #               = Tt Nm y - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm y
         # Tt Sigma^-1 T = Tt Nm T - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm T
 
-        Nmy, _ = self.N.solve_1d(y)
+        Nmy, _ = self.N.solve_1d(y) if y.ndim == 1 else self.N.solve_2d(y)
         FtNmy  = self.F.T @ Nmy
         TtNmy  = T.T @ Nmy
 
@@ -582,6 +586,12 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         kernelproduct.params = P_var_inv.params
 
         return kernelproduct
+
+    # makes a function that returns the tuple
+    # * -0.5 (yt Nm y - yt Nm F (Phi + Ft Nm F)^-1 y - 0.5 (logdet N + logdet Phi + logdet S)
+    # * Tt (Phi + Ft Nm F)^-1 y
+    # * Tt (Phi + Ft Nm F)^-1 T
+    # with fixed y and T
 
     def make_kernelterms(self, y, T):
         # Sigma = (N + F P Ft)

@@ -1,8 +1,12 @@
 import functools
+# from dataclasses import dataclass
 
 import numpy as np
 
 from . import matrix
+from . import signals
+
+# import jax
 
 # Kernel
 #   ConstantKernel
@@ -72,6 +76,14 @@ class PulsarLikelihood:
 
         self.y, self.delay, self.N = y, delay, vsm
 
+    # allow replacement of residuals
+    def __setattr__(self, name, value):
+        if name == 'residuals' and 'logL' in self.__dict__:
+            self.y = value
+            del self.logL
+        else:
+            self.__dict__[name] = value
+
     @functools.cached_property
     def logL(self):
         if self.delay:
@@ -84,10 +96,33 @@ class PulsarLikelihood:
         return self.N.make_sample()
 
 
+# for JAX purposes, it's best if os() returns a Python dictionary
+
+# @dataclass
+# class OS:
+#     os: float
+#     os_sigma: float
+#     snr: float
+#     rhos: np.array
+#     sigmas: np.array
+
+
 class GlobalLikelihood:
     def __init__(self, psls, globalgp=None):
         self.psls = psls
         self.globalgp = matrix.CompoundGlobalGP(globalgp) if isinstance(globalgp, list) else globalgp
+
+    # allow replacement of residuals
+    def __setattr__(self, name, value):
+        if name == 'residuals':
+            for psl, y in zip(self.psls, value):
+                psl.y = y
+
+            for p in ['os', 'os_rhosigma', 'logL', 'sample_conditional', 'conditional']:
+                if p in self.__dict__:
+                    delattr(self, p)
+        else:
+            self.__dict__[name] = value
 
     @functools.cached_property
     def sample(self):
@@ -138,21 +173,52 @@ class GlobalLikelihood:
 
         return sampler
 
-    # design the OS
+    @functools.cached_property
+    def os(self):
+        os_rhosigma = self.os_rhosigma
+
+        gwpar = [par for par in self.globalgp.Phi.params if 'log10_A' in par][0]
+
+        pos = self.globalgp.pos
+        pairs = [(i1, i2) for i1 in range(len(pos)) for i2 in range(i1 + 1, len(pos))]
+        # angles = [np.dot(pos[i1], pos[i2]) for (i1, i2) in pairs]
+        orfs = matrix.jnparray([signals.hd_orf(pos[i1], pos[i2]) for (i1, i2) in pairs])
+
+        def getos(params):
+            rhos, sigmas = os_rhosigma(params)
+
+            gwnorm = 10**(2.0 * params[gwpar])
+            rhos, sigmas = gwnorm * rhos, gwnorm * sigmas
+
+            os = matrix.jnp.sum(rhos * orfs / sigmas**2) / matrix.jnp.sum(orfs**2 / sigmas**2)
+            os_sigma = 1.0 / matrix.jnp.sqrt(matrix.jnp.sum(orfs**2 / sigmas**2))
+            snr = os / os_sigma
+
+            return {'os': os, 'os_sigma': os_sigma, 'snr': snr, 'rhos': rhos, 'sigmas': sigmas,
+                    'log10_A': params[gwpar]}
+
+        getos.params = os_rhosigma.params
+        # getos.angles = angles
+
+        return getos
+
     # rho_ij = y_i Cmi(theta) Fi Phi Ftj Cmj(theta) y_j
     # sigma_ij = tr Fti Cmi(theta) Fi Phi Ftj Cmj(theta) Fj Phi
     @functools.cached_property
-    def os(self):
+    def os_rhosigma(self):
         if self.globalgp is None:
             raise ValueError('GlobalLikelihood.os needs a globalgp.')
         else:
-            pairs, angles = self.globalgp.pairs, self.globalgp.angles
-            kernelsolves = [psl.N.make_kernelsolve(psl.y, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.F)]
-            # components = self.globalgp.Fs[0].shape[1]
-            getsN = self.globalgp.Phi.make_sqrt()
+            pos = self.globalgp.pos
+            pairs = [(i1, i2) for i1 in range(len(pos)) for i2 in range(i1 + 1, len(pos))]
+
+            kernelsolves = [psl.N.make_kernelsolve(psl.y, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.Fs)]
+
+            getN = self.globalgp.Phi.getN
+            components = self.globalgp.Fs[0].shape[1]
 
             def rhosigma(params):
-                sN = getsN(params)
+                sN = matrix.jnp.sqrt(getN(params)[:components])
                 ks = [k(params) for k in kernelsolves]
 
                 ts = [matrix.jnp.dot(sN * ks[i][0], sN * ks[j][0]) for (i,j) in pairs]
@@ -163,9 +229,7 @@ class GlobalLikelihood:
                 return (matrix.jnp.array(ts) / matrix.jnp.array(bs),
                         1.0 / matrix.jnp.sqrt(matrix.jnp.array(bs)))
 
-            rhosigma.params = sorted(set.union(*[set(k.params) for k in kernelsolves], getsN.params))
-            rhosigma.pairs = pairs
-            rhosigma.angles = angles
+            rhosigma.params = sorted(set.union(*[set(k.params) for k in kernelsolves], getN.params))
 
             return rhosigma
 
@@ -232,6 +296,7 @@ class GlobalLikelihood:
             ndim = 1 if isinstance(self.globalgp.Phi, matrix.NoiseMatrix1D_var) else 2
 
             ksolves = [psl.N.make_kernelsolve(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
+
             if len(ksolves) == 0:
                 raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
                     'if you provided them using a generator, it may have been consumed already. ' +
@@ -240,11 +305,20 @@ class GlobalLikelihood:
             if not ksolves[0].params:
                 solves = [ksolve({}) for ksolve in ksolves]
                 FtNmy = matrix.jnp.concatenate([solve[0] for solve in solves])
-                FtNmF = matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
+
+                # FtNmF = matrix.jsp.linalg.block_diag(*[solve[1] for solve in solves])
+                FtNmFs = [solve[1] for solve in solves]
+                ngp = FtNmFs[0].shape[0]
 
                 def cond(params):
                     Pinv, _ = P_var_inv(params)
-                    Sm = (matrix.jnp.diag(Pinv) if ndim == 1 else Pinv) + FtNmF
+
+                    # Sm = (matrix.jnp.diag(Pinv) if ndim == 1 else Pinv) + FtNmF
+
+                    Sm = matrix.jnp.diag(Pinv) if ndim == 1 else Pinv
+                    for i, FtNmF in enumerate(FtNmFs):
+                        Sm = Sm.at[i*ngp:(i+1)*ngp, i*ngp:(i+1)*ngp].add(FtNmF)
+
                     cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
                     mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
 

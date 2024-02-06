@@ -244,6 +244,9 @@ def makegp_fourier_variance(psr, components, T=None, name='fourierGP', noisedict
 
 # Global Fourier GP
 
+# makes a block-diagonal GP over all pulsars; returns a GlobalVariableGP object in which
+# the prior is the concatenation of single-pulsar priors; with common variables, it can be used
+# to implement CURN as a globalgp object, or to set up the optimal statistic
 def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='allpsrFourierGP'):
     argspec = inspect.getfullargspec(prior)
     argmaps = [[(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
@@ -265,6 +268,7 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
     gp = matrix.GlobalVariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats, invprior)
     gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
                 slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
+    gp.pos = [psr.pos for psr in psrs]
 
     return gp
 
@@ -323,12 +327,14 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
     gp = matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, invprior)
     gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
                 slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
+    gp.pos = [psr.pos for psr in psrs]
 
     return gp
 
 
 
 # alternative Fourier GP object for OS (will it work if `prior` has no arguments?)
+# OBSOLETE, remove
 
 def makegps_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, name='gw'):
     argspec = inspect.getfullargspec(prior)
@@ -349,6 +355,7 @@ def makegps_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, name=
     return gp
 
 # make Fourier GP object for OS
+# OBSOLETE, remove
 
 def makegp_fourier_os(psrs, prior, components, T, noisedict={}, fourierbasis=fourierbasis, name='gw'):
     argspec = inspect.getfullargspec(prior)
