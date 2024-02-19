@@ -6,12 +6,13 @@ import jax.numpy
 import jax.scipy
 
 def config(backend):
-    global jnp, jsp, jnparray, jnpkey, jnpsplit, jnpnormal
+    global jnp, jsp, jnparray, intarray, jnpkey, jnpsplit, jnpnormal
 
     if backend == 'numpy':
         jnp, jsp = np, sp
 
         jnparray = lambda a: np.array(a, dtype=np.float64)
+        intarray = lambda a: np.array(a, dtype=np.int64)
 
         jnpkey    = lambda seed: np.random.default_rng(seed)
         jnpsplit  = lambda gen: (gen, gen)
@@ -20,6 +21,7 @@ def config(backend):
         jnp, jsp = jax.numpy, jax.scipy
 
         jnparray = lambda a: jnp.array(a, dtype=jnp.float64)
+        intarray = lambda a: jnp.array(a, dtype=jnp.int64)
 
         jnpkey    = lambda seed: jax.random.PRNGKey(seed)
         jnpsplit  = jax.random.split

@@ -272,6 +272,42 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
 
     return gp
 
+def makegp_rngw_global(psrs, rnprior, rncomponents, gwprior, gworf, gwcomponents, T, name='globalrngw'):
+    gwargspec = inspect.getfullargspec(gwprior)
+    gwargmap  =  [f'gw_{arg}' + (f'({gwcomponents})' if gwargspec.annotations.get(arg) == typing.Sequence else '')
+                  for arg in gwargspec.args if arg not in ['f','df']]
+
+    rnargspec = inspect.getfullargspec(rnprior)
+    rnargmaps = [[f'{psr.name}_red_noise_{arg}' + (f'({rncomponents})' if rnargspec.annotations.get(arg) == typing.Sequence else '')
+                  for arg in rnargspec.args if arg not in ['f','df']]
+                 for psr in psrs]
+
+    # assume rncomponents > gwcomponents
+    fs, dfs, fmats = zip(*[fourierbasis(psr, rncomponents, T) for psr in psrs])
+    f, df = fs[0], dfs[0]
+
+    gworfmat = matrix.jnparray([[gworf(p1.pos, p2.pos) for p1 in psrs] for p2 in psrs])
+    gwmask = matrix.jnparray(np.arange(2*rncomponents) < 2*gwcomponents)
+
+    diagrange = matrix.intarray(range(2*rncomponents*len(psrs)))
+
+    def priorfunc(params):
+        gwphidiag = gwmask * gwprior(f, df, *[params[arg] for arg in gwargmap])
+        Phi = jnp.block([[jnp.diag(jnp.dot(gwphidiag, val)) for val in row] for row in gworfmat])
+
+        rnphidiag = jnp.concatenate([rnprior(f, df, *[params[arg] for arg in argmap]) for argmap in rnargmaps])
+        Phi = Phi.at[(diagrange, diagrange)].add(rnphidiag)
+
+        return Phi
+    priorfunc.params = gwargmap + sum(rnargmaps, [])
+
+    gp = matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, None)
+    gp.index = {f'{psr.name}_red_noise_coefficients({2*rncomponents})':
+                slice((2*rncomponents)*i, (2*rncomponents)*(i+1)) for i, psr in enumerate(psrs)}
+    gp.pos = [psr.pos for psr in psrs]
+
+    return gp
+
 def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourierbasis, name='globalFourierGP'):
     priors = priors if isinstance(priors, list) else [priors]
     orfs   = orfs   if isinstance(orfs, list)   else [orfs]
