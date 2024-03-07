@@ -417,6 +417,40 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
 
         return kernelproduct
 
+    def make_kernelterms(self, y, T):
+        # Sigma = (N + F P Ft)
+        # Sigma^-1 = Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm
+        #
+        # yt Sigma^-1 y = yt Nm y - (yt Nm F) C^-1 (Ft Nm y)
+        # Tt Sigma^-1 y = Tt Nm y - Tt Nm F C^-1 (Ft Nm y)
+        # Tt Sigma^-1 T = Tt Nm T - (Tt Nm F) C^-1 (Ft Nm T)
+
+        Nmy, ldN = self.N.solve_1d(y)
+        ytNmy = y @ Nmy
+        FtNmy = self.F.T @ Nmy
+        TtNmy = T.T @ Nmy
+
+        NmF, _ = self.N.solve_2d(self.F)
+        FtNmF = self.F.T @ NmF
+        TtNmF = T.T @ NmF
+
+        NmT, _ = self.N.solve_2d(T)
+        FtNmT = self.F.T @ NmT
+        TtNmT = T.T @ NmT
+
+        sol = sp.linalg.cho_solve(self.cf, FtNmy)
+        sol2 = sp.linalg.cho_solve(self.cf, FtNmT)
+
+        a = -0.5 * (ytNmy - FtNmy.T @ sol) - 0.5 * self.ld
+        b = jnparray(TtNmy - TtNmF @ sol)
+        c = jnparray(TtNmT - TtNmF @ sol2)
+
+        def kernelterms(params={}):
+            return a, b, c
+        kernelterms.params = []
+
+        return kernelterms
+
     def make_kernelsolve(self, y, T):
         # Tt Sigma y = Tt (N + F P Ft) y
         # Tt Sigma^-1 y = Tt (Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm) y
