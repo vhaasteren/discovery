@@ -272,13 +272,13 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
 
     return gp
 
-def makegp_rngw_global(psrs, rnprior, rncomponents, gwprior, gworf, gwcomponents, T, name='globalrngw'):
+def makegp_rngw_global(psrs, rnprior, rncomponents, gwprior, gworf, gwcomponents, T, name='red_noise'):
     gwargspec = inspect.getfullargspec(gwprior)
     gwargmap  =  [f'gw_{arg}' + (f'({gwcomponents})' if gwargspec.annotations.get(arg) == typing.Sequence else '')
                   for arg in gwargspec.args if arg not in ['f','df']]
 
     rnargspec = inspect.getfullargspec(rnprior)
-    rnargmaps = [[f'{psr.name}_red_noise_{arg}' + (f'({rncomponents})' if rnargspec.annotations.get(arg) == typing.Sequence else '')
+    rnargmaps = [[f'{psr.name}_{name}_{arg}' + (f'({rncomponents})' if rnargspec.annotations.get(arg) == typing.Sequence else '')
                   for arg in rnargspec.args if arg not in ['f','df']]
                  for psr in psrs]
 
@@ -302,7 +302,7 @@ def makegp_rngw_global(psrs, rnprior, rncomponents, gwprior, gworf, gwcomponents
     priorfunc.params = gwargmap + sum(rnargmaps, [])
 
     gp = matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, None)
-    gp.index = {f'{psr.name}_red_noise_coefficients({2*rncomponents})':
+    gp.index = {f'{psr.name}_{name}_coefficients({2*rncomponents})':
                 slice((2*rncomponents)*i, (2*rncomponents)*(i+1)) for i, psr in enumerate(psrs)}
     gp.pos = [psr.pos for psr in psrs]
 
