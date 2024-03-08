@@ -166,7 +166,9 @@ def makegp_timing(psr, constant=None, variance=None, svd=False):
         else:
             raise ValueError("signals.makegp_timing() can take a specification of _either_ `constant` or `variance`.")
 
-    return makegp_improper(psr, fmat, constant=constant, name='timingmodel')
+    gp = makegp_improper(psr, fmat, constant=constant, name='timingmodel')
+    gp.name = psr.name
+    return gp
 
 # Fourier GP
 
@@ -210,9 +212,9 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
         return prior(f, df, *[params[arg] for arg in argmap])
     priorfunc.params = argmap
 
-    return matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmat)
-
-
+    gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmat)
+    gp.name = psr.name
+    return gp
 
 # component-wise GP
 
@@ -269,6 +271,7 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
     gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
                 slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
     gp.pos = [psr.pos for psr in psrs]
+    gp.name = [psr.name for psr in psrs]
 
     return gp
 
@@ -305,6 +308,7 @@ def makegp_rngw_global(psrs, rnprior, rncomponents, gwprior, gworf, gwcomponents
     gp.index = {f'{psr.name}_{name}_coefficients({2*rncomponents})':
                 slice((2*rncomponents)*i, (2*rncomponents)*(i+1)) for i, psr in enumerate(psrs)}
     gp.pos = [psr.pos for psr in psrs]
+    gp.name = [psr.name for psr in psrs]
 
     return gp
 
@@ -364,6 +368,7 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
     gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
                 slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
     gp.pos = [psr.pos for psr in psrs]
+    gp.name = [psr.name for psr in psrs]
 
     return gp
 
