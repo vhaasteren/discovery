@@ -270,7 +270,7 @@ class GlobalLikelihood:
 
                 return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
 
-            loglike.params = sorted(set.union(*[set(kterm.params) for kterm in kterms])) + P_var_inv.params
+            loglike.params = sorted(sorted(set.union(*[set(kterm.params) for kterm in kterms])) + P_var_inv.params)
 
         return loglike
 
@@ -286,62 +286,73 @@ class GlobalLikelihood:
         size = mpicomm.Get_size()
         rank = mpicomm.Get_rank()
 
-        # handle the case where there are more matrices in self.globalgp than likelihoods
-        Fmats = {name: Fmat for name, Fmat in zip(self.globalgp.name, self.globalgp.Fs)}
-        kterms = [psl.N.make_kernelterms(psl.y, Fmats[psl.name]) for psl in self.psls]
-
-        if rank == 0:
-            npsr = len(self.globalgp.Fs)
-            ngp = self.globalgp.Fs[0].shape[1]
-
-            P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
+        if self.globalgp is None:
+            logls = [psl.logL for psl in self.psls]
 
             def loglike(params):
-                b0 = matrix.jnp.zeros((size,), dtype=matrix.jnp.float64)
-                b1 = matrix.jnp.zeros((npsr, ngp), dtype=matrix.jnp.float64)
-                b2 = matrix.jnp.zeros((npsr, ngp, ngp), dtype=matrix.jnp.float64)
+                slogl = sum(logl(params) for logl in logls)
+                slogl, tk = mpi4jax.allreduce(slogl, mpi4py.MPI.SUM, comm=jaxcomm)
+                return slogl
 
-                t0, t1, t2 = zip(*[kterm(params) for kterm in kterms])
-
-                b0 = b0.at[0].set(sum(t0))
-                b1 = b1.at[0::size,:].set(matrix.jnp.array(t1))
-                b2 = b2.at[0::size,:,:].set(matrix.jnp.array(t2))
-
-                for i in range(1, size):
-                    b, tk = mpi4jax.recv(b0[i], source=i, tag=0, comm=jaxcomm)
-                    b0 = b0.at[i].set(b)
-                    b, tk = mpi4jax.recv(b1[i::size,:], source=i, tag=1, token=tk, comm=jaxcomm)
-                    b1 = b1.at[i::size,:].set(b)
-                    b, tk = mpi4jax.recv(b2[i::size,:,:], source=i, tag=2, token=tk, comm=jaxcomm)
-                    b2 = b2.at[i::size,:,:].set(b)
-
-                p0 = matrix.jnp.sum(b0)
-                FtNmy = b1.flatten()
-
-                Pinv, ldP = P_var_inv(params)
-                cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*b2))
-
-                ret = p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
-                mpi4jax.bcast(ret, root=0, comm=jaxcomm)
-
-                return ret
-
-            local_list = P_var_inv.params + sorted(set.union(*[set(kterm.params) for kterm in kterms]))
+            local_list = sorted(set.union(*[set(logl.params) for logl in logls]))
+            loglike.params = sorted(set([p for l in mpicomm.allgather(local_list) for p in l]))
         else:
-            def loglike(params):
-                t0, t1, t2 = zip(*[kterm(params) for kterm in kterms])
+            # handle the case where there are more matrices in self.globalgp than likelihoods
+            Fmats = {name: Fmat for name, Fmat in zip(self.globalgp.name, self.globalgp.Fs)}
+            kterms = [psl.N.make_kernelterms(psl.y, Fmats[psl.name]) for psl in self.psls]
 
-                tk = mpi4jax.send(sum(t0), dest=0, tag=0, comm=jaxcomm)
-                tk = mpi4jax.send(matrix.jnp.array(t1), dest=0, tag=1, token=tk, comm=jaxcomm)
-                tk = mpi4jax.send(matrix.jnp.array(t2), dest=0, tag=2, token=tk, comm=jaxcomm)
+            if rank == 0:
+                npsr = len(self.globalgp.Fs)
+                ngp = self.globalgp.Fs[0].shape[1]
 
-                ret = mpi4jax.bcast(1.0, root=0, comm=jaxcomm)
+                P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
 
-                return ret
+                def loglike(params):
+                    b0 = matrix.jnp.zeros((size,), dtype=matrix.jnp.float64)
+                    b1 = matrix.jnp.zeros((npsr, ngp), dtype=matrix.jnp.float64)
+                    b2 = matrix.jnp.zeros((npsr, ngp, ngp), dtype=matrix.jnp.float64)
 
-            local_list = sorted(set.union(*[set(kterm.params) for kterm in kterms]))
+                    t0, t1, t2 = zip(*[kterm(params) for kterm in kterms])
 
-        loglike.params = [p for l in mpicomm.allgather(local_list) for p in l]
+                    b0 = b0.at[0].set(sum(t0))
+                    b1 = b1.at[0::size,:].set(matrix.jnp.array(t1))
+                    b2 = b2.at[0::size,:,:].set(matrix.jnp.array(t2))
+
+                    for i in range(1, size):
+                        b, tk = mpi4jax.recv(b0[i], source=i, tag=0, comm=jaxcomm)
+                        b0 = b0.at[i].set(b)
+                        b, tk = mpi4jax.recv(b1[i::size,:], source=i, tag=1, token=tk, comm=jaxcomm)
+                        b1 = b1.at[i::size,:].set(b)
+                        b, tk = mpi4jax.recv(b2[i::size,:,:], source=i, tag=2, token=tk, comm=jaxcomm)
+                        b2 = b2.at[i::size,:,:].set(b)
+
+                    p0 = matrix.jnp.sum(b0)
+                    FtNmy = b1.flatten()
+
+                    Pinv, ldP = P_var_inv(params)
+                    cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*b2))
+
+                    ret = p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
+                    ret, tk = mpi4jax.bcast(ret, root=0, comm=jaxcomm)
+
+                    return ret
+
+                local_list = P_var_inv.params + sorted(set.union(*[set(kterm.params) for kterm in kterms]))
+            else:
+                def loglike(params):
+                    t0, t1, t2 = zip(*[kterm(params) for kterm in kterms])
+
+                    tk = mpi4jax.send(sum(t0), dest=0, tag=0, comm=jaxcomm)
+                    tk = mpi4jax.send(matrix.jnp.array(t1), dest=0, tag=1, token=tk, comm=jaxcomm)
+                    tk = mpi4jax.send(matrix.jnp.array(t2), dest=0, tag=2, token=tk, comm=jaxcomm)
+
+                    ret, tk = mpi4jax.bcast(1.0, root=0, comm=jaxcomm)
+
+                    return ret
+
+                local_list = sorted(set.union(*[set(kterm.params) for kterm in kterms]))
+
+            loglike.params = sorted(set([p for l in mpicomm.allgather(local_list) for p in l]))
 
         return loglike
 
