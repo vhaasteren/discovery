@@ -3,7 +3,7 @@ import re
 import numpy as np
 
 from . import matrix
-
+jnp = matrix.jnp
 
 def uniform(par, a, b):
     def logpriorfunc(params):
@@ -42,6 +42,39 @@ def makelogprior_uniform(params, priordict={}):
         return sum(prior(params) for prior in priors)
 
     return logprior
+
+
+def makelogtransform_uniform(func, priordict={}):
+    priordict = {**priordict_standard, **priordict}
+
+    a, b = [], []
+    for par in func.params:
+        for pname, prange in priordict.items():
+            if re.match(pname, par):
+                a.append(prange[0])
+                b.append(prange[1])
+                break
+        else:
+            raise KeyError(f"No known prior for {par}.")
+
+    a, b = matrix.jnparray(a), matrix.jnparray(b)
+
+    def to_dict(ys):
+        xs = 0.5 * (b + a + (b - a) * jnp.tanh(ys))
+        return dict(zip(func.params, xs))
+
+    def to_vec(params):
+        xs = matrix.jnparray([params[pname] for pname in func.params])
+        return jnp.arctanh((a + b - 2*x)/(a - b))
+
+    def transformed(ys):
+        return func(to_dict(ys)) + jnp.sum(jnp.log(0.5 / jnp.cosh(ys)**2))
+
+    transformed.params = func.params
+    transformed.to_dict = to_dict
+    transformed.to_vec = to_vec
+
+    return transformed
 
 
 def sample_uniform(params, priordict={}, n=1):

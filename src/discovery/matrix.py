@@ -20,7 +20,7 @@ def config(backend):
     elif backend == 'jax':
         jnp, jsp = jax.numpy, jax.scipy
 
-        jnparray = lambda a: jnp.array(a, dtype=jnp.float64)
+        jnparray = lambda a: jnp.array(a, dtype=jnp.float64 if jax.config.x64_enabled else jnp.float32)
         intarray = lambda a: jnp.array(a, dtype=jnp.int64)
 
         jnpkey    = lambda seed: jax.random.PRNGKey(seed)

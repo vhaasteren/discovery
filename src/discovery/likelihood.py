@@ -259,6 +259,9 @@ class GlobalLikelihood:
                     'if you provided them using a generator, it may have been consumed already. ' +
                     'In that case you can use a list.')
 
+            npsr = len(self.globalgp.Fs)
+            ngp = self.globalgp.Fs[0].shape[1]
+
             def loglike(params):
                 terms = [kterm(params) for kterm in kterms]
 
@@ -266,7 +269,14 @@ class GlobalLikelihood:
                 FtNmy = matrix.jnp.concatenate([term[1] for term in terms])
 
                 Pinv, ldP = P_var_inv(params)
-                cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*[term[2] for term in terms]))
+
+                for i, term in enumerate(terms):
+                    Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(term[2])
+
+                cf = matrix.jsp.linalg.cho_factor(Pinv)
+
+                # this seems a bit slower than the .at/.set scheme in plogL below
+                # cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*[term[2] for term in terms]))
 
                 return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
 

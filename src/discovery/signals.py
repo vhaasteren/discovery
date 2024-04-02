@@ -35,7 +35,7 @@ def makenoise_measurement_simple(psr, noisedict={}):
         return matrix.NoiseMatrix1D_var(getnoise)
 
 # nanograv backends
-def makenoise_measurement(psr, noisedict={}):
+def makenoise_measurement(psr, noisedict={}, scale=1.0):
     backends = sorted(set(psr.backend_flags))
 
     efacs = [f'{psr.name}_{backend}_efac' for backend in backends]
@@ -43,16 +43,17 @@ def makenoise_measurement(psr, noisedict={}):
     params = efacs + log10_t2equads
 
     masks = [(psr.backend_flags == backend) for backend in backends]
+    logscale = np.log10(scale)
 
     if all(par in noisedict for par in params):
-        noise = sum(mask * noisedict[efac]**2 * (psr.toaerrs**2 + 10.0**(2 * noisedict[log10_t2equad]))
+        noise = sum(mask * noisedict[efac]**2 * ((scale * psr.toaerrs)**2 + 10.0**(2 * (logscale + noisedict[log10_t2equad])))
                     for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
 
         return matrix.NoiseMatrix1D_novar(noise)
     else:
-        toaerrs, masks = matrix.jnparray(psr.toaerrs), [matrix.jnparray(mask) for mask in masks]
+        toaerrs, masks = matrix.jnparray(scale * psr.toaerrs), [matrix.jnparray(mask) for mask in masks]
         def getnoise(params):
-            return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * params[log10_t2equad]))
+            return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * (logscale + params[log10_t2equad])))
                     for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
         getnoise.params = params
 
@@ -104,7 +105,7 @@ def makegp_ecorr_simple(psr, noisedict={}):
         return matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), Umat)
 
 # nanograv backends
-def makegp_ecorr(psr, noisedict={}, enterprise=False):
+def makegp_ecorr(psr, noisedict={}, enterprise=False, scale=1.0):
     log10_ecorrs, Umats = [], []
 
     backends = sorted(set(psr.backend_flags))
@@ -131,15 +132,16 @@ def makegp_ecorr(psr, noisedict={}, enterprise=False):
         z[cnt:cnt+Umat.shape[1]] = 1.0
         pmasks.append(z)
         cnt = cnt + Umat.shape[1]
+    logscale = np.log10(scale)
 
     if all(par in noisedict for par in params):
-        phi = sum(10.0**(2 * noisedict[log10_ecorr]) * pmask for (log10_ecorr, pmask) in zip(log10_ecorrs, pmasks))
+        phi = sum(10.0**(2 * (logscale + noisedict[log10_ecorr])) * pmask for (log10_ecorr, pmask) in zip(log10_ecorrs, pmasks))
 
         return matrix.ConstantGP(matrix.NoiseMatrix1D_novar(phi), Umatall)
     else:
         pmasks = [matrix.jnparray(pmask) for pmask in pmasks]
         def getphi(params):
-            return sum(10.0**(2 * params[log10_ecorr]) * pmask for (log10_ecorr, pmask) in zip(log10_ecorrs, pmasks))
+            return sum(10.0**(2 * (logscale + params[log10_ecorr])) * pmask for (log10_ecorr, pmask) in zip(log10_ecorrs, pmasks))
         getphi.params = params
 
         return matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), Umatall)
@@ -149,9 +151,9 @@ def makegp_ecorr(psr, noisedict={}, enterprise=False):
 def makegp_improper(psr, fmat, constant=1.0e40, name='improperGP'):
     return matrix.ConstantGP(matrix.NoiseMatrix1D_novar(constant * np.ones(fmat.shape[1])), fmat)
 
-def makegp_timing(psr, constant=None, variance=None, svd=False):
+def makegp_timing(psr, constant=None, variance=None, svd=False, scale=1.0):
     if svd:
-        fmat, _, _ = np.linalg.svd(psr.Mmat, full_matrices=False)
+        fmat, _, _ = np.linalg.svd(scale * psr.Mmat, full_matrices=False)
     else:
         fmat = np.array(psr.Mmat / np.sqrt(np.sum(psr.Mmat**2, axis=0)), dtype=np.float64)
 
@@ -428,6 +430,16 @@ def makegp_fourier_os(psrs, prior, components, T, noisedict={}, fourierbasis=fou
 
 def powerlaw(f, df, log10_A, gamma):
     return (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df
+
+def make_powerlaw(scale=1.0):
+    logscale = np.log10(scale)
+
+    def powerlaw(f, df, log10_A, gamma):
+        logpl = (2.0 * log10_A) - jnp.log10(12.0 * jnp.pi**2) + (gamma - 3.0) * jnp.log10(const.fyr) - gamma * jnp.log10(f) + jnp.log10(df)
+        return 10**(2*logscale + logpl)
+
+    return powerlaw
+
 
 def freespectrum(f, df, log10_rho: typing.Sequence):
     return jnp.repeat(10.0**(2.0 * log10_rho), 2)

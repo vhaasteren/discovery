@@ -2,6 +2,7 @@ import time
 import glob
 import argparse
 import sys
+import re
 
 import mpi4py
 
@@ -50,12 +51,17 @@ psrfiles = sorted(glob.glob('../data/*-[JB]*.feather'))
 allpsrs = [ds.Pulsar.read_feather(psrfile) for psrfile in psrfiles[:nmax]]
 
 # double up the pulsars to get into IPTA territory
+# FIX: something wrong in the parameterization...
 if args.i:
     allpsrs2 = [ds.Pulsar.read_feather(psrfile) for psrfile in psrfiles[:nmax]]
+
     for psr in allpsrs2:
         pos = np.array(psr.pos)
         pos[:] += 0.2
         psr.pos = list(pos / np.sqrt(np.dot(pos, pos)))
+        print(psr.pos)
+        psr.noisedict = {re.sub('^B','C',re.sub('^J','K',key)): val for key, val in psr.noisedict.items()}
+        psr.name = re.sub('^B','C',re.sub('^J','K',psr.name))
     allpsrs = allpsrs + allpsrs2
 
 Tspan = ds.getspan(allpsrs)
