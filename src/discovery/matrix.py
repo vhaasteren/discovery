@@ -12,6 +12,7 @@ def config(backend):
         jnp, jsp = np, sp
 
         jnparray = lambda a: np.array(a, dtype=np.float64)
+        jnpzeros = lambda a: np.zeros(a, dtype=np.float64)
         intarray = lambda a: np.array(a, dtype=np.int64)
 
         jnpkey    = lambda seed: np.random.default_rng(seed)
@@ -21,6 +22,7 @@ def config(backend):
         jnp, jsp = jax.numpy, jax.scipy
 
         jnparray = lambda a: jnp.array(a, dtype=jnp.float64 if jax.config.x64_enabled else jnp.float32)
+        jnpzeros = lambda a: jnp.zeros(a, dtype=jnp.float64 if jax.config.x64_enabled else jnp.float32)
         intarray = lambda a: jnp.array(a, dtype=jnp.int64)
 
         jnpkey    = lambda seed: jax.random.PRNGKey(seed)
@@ -360,6 +362,26 @@ class NoiseMatrix2D_var(VariableKernel):
         return sample
 
 
+class VectorNoiseMatrix1D_var(VariableKernel):
+    def __init__(self, getN):
+        self.getN = getN
+        self.params = getN.params
+
+    def make_inv(self):
+        getN = self.getN
+        def inv(params):
+            N = getN(params)
+
+            return 1.0 / N, jnp.sum(jnp.log(N), axis=1)
+
+            # n, m = N.shape
+            # i1, i2 = jnp.diag_indices(m, ndim=2) # it's hard to vectorize numpy.diag!
+            # return jnpzeros((n, m, m)).at[:,i1,i2].set(1.0 / N), jnp.sum(jnp.log(N), axis=1)
+        inv.params = getN.params
+
+        return inv
+
+
 def ShermanMorrisonKernel(N, F, P):
     if not isinstance(F, np.ndarray):
         raise TypeError("F must be a numpy array.")
@@ -671,3 +693,36 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         kernelterms.params = self.P_var.params
 
         return kernelterms
+
+class VectorShermanMorrisonKernel_varP(VariableKernel):
+    def __init__(self, Ns, Fs, P_var):
+        self.Ns, self.Fs, self.P_var = Ns, Fs, P_var
+
+    def make_kernelproduct(self, ys):
+        NmFs, ldNs = zip(*[N.solve_2d(F) for N, F in zip(self.Ns, self.Fs)])
+        FtNmFs = [F.T @ NmF for F, NmF in zip(self.Fs, NmFs)]
+
+        Nmys, _  = zip(*[N.solve_1d(y) for N, y in zip(self.Ns, ys)])
+        ytNmys = [y @ Nmy for y, Nmy in zip(ys, Nmys)]
+        NmFtys = [NmF.T @ y for NmF, y in zip(NmFs, ys)]
+
+        P_var_inv = self.P_var.make_inv()
+        FtNmF, NmFty = jnparray(FtNmFs), jnparray(NmFtys)
+        ytNmy, ldN = float(sum(ytNmys)), float(sum(ldNs))
+
+        def kernelproduct(params):
+            Pinv, ldP = P_var_inv(params)            # Pinv.shape = FtNmF.shape = [npsr, ngp, ngp]
+
+            i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
+            cf = jsp.linalg.cho_factor(FtNmF.at[:,i1,i2].add(Pinv))
+
+            # cf = jsp.linalg.cho_factor(Pinv + FtNmF)
+
+            ytXy = jnp.sum(NmFty * jsp.linalg.cho_solve(cf, NmFty)) # was NmFty.T @ jsp.linalg.cho_solve(...)
+
+            i1, i2 = jnp.diag_indices(cf[0].shape[1], ndim=2) # it's hard to vectorize numpy.diag!
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + jnp.sum(ldP) + 2.0 * jnp.sum(jnp.log(cf[0][:,i1,i2])))
+
+        kernelproduct.params = P_var_inv.params
+
+        return kernelproduct

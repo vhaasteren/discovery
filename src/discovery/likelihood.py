@@ -452,3 +452,19 @@ class GlobalLikelihood:
                 cond.params = sorted(set.union(*[set(ksolve.params) for ksolve in ksolves])) + P_var_inv.params
 
         return cond
+
+
+class ArrayLikelihood:
+    def __init__(self, psls, commongp):
+        self.psls = psls
+        self.commongp = commongp
+
+    @functools.cached_property
+    def logL(self):
+        Ns, ys = zip(*[(psl.N, psl.y) for psl in self.psls])
+        vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, self.commongp.F, self.commongp.Phi)
+
+        loglike = vsm.make_kernelproduct(ys)
+        loglike.params = self.commongp.Phi.params
+
+        return loglike
