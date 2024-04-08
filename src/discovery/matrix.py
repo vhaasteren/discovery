@@ -726,3 +726,49 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
         kernelproduct.params = P_var_inv.params
 
         return kernelproduct
+
+    def make_kernelterms(self, ys, Ts):
+        # Sigma = (N + F P Ft)
+        # Sigma^-1 = Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm
+        #
+        # yt Sigma^-1 y = yt Nm y - (yt Nm F) C^-1 (Ft Nm y)
+        # Tt Sigma^-1 y = Tt Nm y - Tt Nm F C^-1 (Ft Nm y)
+        # Tt Sigma^-1 T = Tt Nm T - (Tt Nm F) C^-1 (Ft Nm T)
+
+        Nmys, ldNs = zip(*[N.solve_1d(y) for N, y in zip(self.Ns, ys)])
+        ytNmys = [y @ Nmy for y, Nmy in zip(ys, Nmys)]
+        FtNmys = [F.T @ Nmy for F, Nmy in zip(self.Fs, Nmys)]
+        TtNmys = [T.T @ Nmy for T, Nmy in zip(Ts, Nmys)]
+
+        NmFs, _ = zip(*[N.solve_2d(F) for N, F in zip(self.Ns, self.Fs)])
+        FtNmFs = [F.T @ NmF for F, NmF in zip(self.Fs, NmFs)]
+        TtNmFs = [T.T @ NmF for T, NmF in zip(Ts, NmFs)]
+
+        NmTs, _ = zip(*[N.solve_2d(T) for N, T in zip(self.Ns, Ts)])
+        FtNmTs = [F.T @ NmT for F, NmT in zip(self.Fs, NmTs)]
+        TtNmTs = [T.T @ NmT for T, NmT in zip(Ts, NmTs)]
+
+        P_var_inv = self.P_var.make_inv()
+
+        FtNmF, FtNmy, FtNmT = jnparray(FtNmFs), jnparray(FtNmys), jnparray(FtNmTs)
+        ldN, ytNmy = float(sum(ldNs)), float(sum(ytNmys))
+        TtNmy, TtNmT, TtNmF = jnparray(TtNmys), jnparray(TtNmTs), jnparray(TtNmFs)
+        def kernelterms(params):
+            Pinv, ldP = P_var_inv(params)
+
+            i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
+            cf = jsp.linalg.cho_factor(FtNmF.at[:,i1,i2].add(Pinv))
+
+            sol = jsp.linalg.cho_solve(cf, FtNmy)
+            sol2 = jsp.linalg.cho_solve(cf, FtNmT)
+
+            i1, i2 = jnp.diag_indices(cf[0].shape[1], ndim=2)
+            a = -0.5 * (ytNmy - jnp.sum(FtNmy * sol)) - 0.5 * (ldN + jnp.sum(ldP) + 2.0 * jnp.sum(jnp.log(cf[0][:,i1,i2])))
+            b = TtNmy - jnp.sum(TtNmF * sol[:, jnp.newaxis, :], axis=2)
+            c = TtNmT - TtNmF @ sol2 # fine as is!
+
+            return a, b, c
+
+        kernelterms.params = self.P_var.params
+
+        return kernelterms

@@ -270,13 +270,12 @@ class GlobalLikelihood:
 
                 Pinv, ldP = P_var_inv(params)
 
-                for i, term in enumerate(terms):
-                    Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(term[2])
-
-                cf = matrix.jsp.linalg.cho_factor(Pinv)
+                #for i, term in enumerate(terms):
+                #    Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(term[2])
+                #cf = matrix.jsp.linalg.cho_factor(Pinv)
 
                 # this seems a bit slower than the .at/.set scheme in plogL below
-                # cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*[term[2] for term in terms]))
+                cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*[term[2] for term in terms]))
 
                 return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
 
@@ -455,16 +454,39 @@ class GlobalLikelihood:
 
 
 class ArrayLikelihood:
-    def __init__(self, psls, commongp):
+    def __init__(self, psls, commongp, globalgp=None):
         self.psls = psls
-        self.commongp = commongp
+        self.commongp = commongp # will want to combine if given a list
+        self.globalgp = globalgp # will want to combine if given a list
 
     @functools.cached_property
     def logL(self):
         Ns, ys = zip(*[(psl.N, psl.y) for psl in self.psls])
         vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, self.commongp.F, self.commongp.Phi)
 
-        loglike = vsm.make_kernelproduct(ys)
-        loglike.params = self.commongp.Phi.params
+        if self.globalgp is None:
+            loglike = vsm.make_kernelproduct(ys)
+            loglike.params = self.commongp.Phi.params
+        else:
+            P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
+            kterms = vsm.make_kernelterms(ys, self.globalgp.Fs)
+
+            npsr = len(self.globalgp.Fs)
+            ngp = self.globalgp.Fs[0].shape[1]
+
+            def loglike(params):
+                terms = kterms(params)
+
+                p0 = matrix.jnp.sum(terms[0])
+                FtNmy = terms[1].reshape(npsr * ngp)
+
+                Pinv, ldP = P_var_inv(params)
+                # for i in range(npsr):
+                #     Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(terms[2][i,:,:])
+                cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
+
+                return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
+
+            loglike.params = sorted(kterms.params + P_var_inv.params)
 
         return loglike
