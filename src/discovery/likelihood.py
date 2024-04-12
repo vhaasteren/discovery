@@ -2,6 +2,7 @@ import functools
 # from dataclasses import dataclass
 
 import numpy as np
+import jax
 
 from . import matrix
 from . import signals
@@ -454,10 +455,11 @@ class GlobalLikelihood:
 
 
 class ArrayLikelihood:
-    def __init__(self, psls, commongp, globalgp=None):
+    def __init__(self, psls, commongp, globalgp=None, blockdiag='scipy'):
         self.psls = psls
         self.commongp = commongp # will want to combine if given a list
         self.globalgp = globalgp # will want to combine if given a list
+        self.blockdiag = blockdiag
 
     @functools.cached_property
     def logL(self):
@@ -473,6 +475,7 @@ class ArrayLikelihood:
 
             npsr = len(self.globalgp.Fs)
             ngp = self.globalgp.Fs[0].shape[1]
+            blockdiag = self.blockdiag
 
             def loglike(params):
                 terms = kterms(params)
@@ -481,10 +484,22 @@ class ArrayLikelihood:
                 FtNmy = terms[1].reshape(npsr * ngp)
 
                 Pinv, ldP = P_var_inv(params)
-                # for i in range(npsr):
-                #     Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(terms[2][i,:,:])
-                cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
 
+                # on CPU, all schemes have comparable compilation and performance times
+                if blockdiag == 'scipy':
+                    cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
+                elif blockdiag == 'pyloop':
+                    for i in range(npsr):
+                        Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(terms[2][i,:,:])
+                    cf = matrix.jsp.linalg.cho_factor(Pinv)
+                elif blockdiag == 'jaxloop':
+                    Pinv = jax.lax.fori_loop(0, npsr,
+                                lambda i, Pinv: jax.lax.dynamic_update_slice(Pinv,
+                                    jax.lax.dynamic_slice(Pinv, (i*ngp,i*ngp), (ngp,ngp)) +
+                                    jax.lax.squeeze(jax.lax.dynamic_slice(terms[2], (i,0,0), (1,ngp,ngp)), [0]),
+                                    (i*ngp,i*ngp)),
+                                Pinv)
+                    cf = matrix.jsp.linalg.cho_factor(Pinv)
                 return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
 
             loglike.params = sorted(kterms.params + P_var_inv.params)

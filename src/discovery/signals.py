@@ -219,21 +219,37 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
     gp.name = psr.name
     return gp
 
-def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, common=[], name='fourierCommonGP'):
+def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, common=[], vector=False, name='fourierCommonGP'):
     argspec = inspect.getfullargspec(prior)
-    argmaps = [arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else [f'{psr.name}_{name}_{arg}' for psr in psrs]
-               for arg in argspec.args if arg not in ['f', 'df']]
+
+    if vector:
+        argmap = [arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else
+                  f'{name}_{arg}({len(psrs)})' for arg in argspec.args if arg not in ['f', 'df']]
+    else:
+        argmaps = [arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else [f'{psr.name}_{name}_{arg}' for psr in psrs]
+                   for arg in argspec.args if arg not in ['f', 'df']]
 
     fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
     f, df = fs[0], dfs[0]
 
-    vprior = jax.vmap(prior, in_axes=[None, None] +
-                                     [0 if isinstance(argmap, list) else None for argmap in argmaps])
-    def priorfunc(params):
-        vpars = [matrix.jnparray([params[arg] for arg in argmap]) if isinstance(argmap, list) else params[argmap]
-                 for argmap in argmaps]
-        return vprior(f, df, *vpars)
-    priorfunc.params = sorted(set(sum([argmap if isinstance(argmap, list) else [argmap] for argmap in argmaps], [])))
+    if vector:
+        vprior = jax.vmap(prior, in_axes=[None, None] +
+                                         [0 if f'({len(psrs)})' in arg else None for arg in argmap])
+
+        def priorfunc(params):
+            return vprior(f, df, *[params[arg] for arg in argmap])
+
+        priorfunc.params = sorted(argmap)
+    else:
+        vprior = jax.vmap(prior, in_axes=[None, None] +
+                                        [0 if isinstance(argmap, list) else None for argmap in argmaps])
+
+        def priorfunc(params):
+            vpars = [matrix.jnparray([params[arg] for arg in argmap]) if isinstance(argmap, list) else params[argmap]
+                    for argmap in argmaps]
+            return vprior(f, df, *vpars)
+
+        priorfunc.params = sorted(set(sum([argmap if isinstance(argmap, list) else [argmap] for argmap in argmaps], [])))
 
     return matrix.VariableGP(matrix.VectorNoiseMatrix1D_var(priorfunc), fmats)
 
