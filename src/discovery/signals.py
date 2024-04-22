@@ -410,57 +410,6 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
     return gp
 
 
-
-# alternative Fourier GP object for OS (will it work if `prior` has no arguments?)
-# OBSOLETE, remove
-
-def makegps_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, name='gw'):
-    argspec = inspect.getfullargspec(prior)
-    argmap = [f'{name}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
-              for arg in argspec.args if arg not in ['f', 'df']]
-
-    fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
-
-    f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
-
-    def priorfunc(params):
-        return prior(f, df, *[params[arg] for arg in argmap])
-    priorfunc.params = argmap
-
-    gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats)
-    gp.psrspos = [psr.pos for psr in psrs]
-
-    return gp
-
-# make Fourier GP object for OS
-# OBSOLETE, remove
-
-def makegp_fourier_os(psrs, prior, components, T, noisedict={}, fourierbasis=fourierbasis, name='gw'):
-    argspec = inspect.getfullargspec(prior)
-    argmap = [f'{name}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
-              for arg in argspec.args if arg not in ['f', 'df']]
-
-    fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
-
-    f, df = matrix.jnparray(fs[0]), matrix.jnparray(dfs[0])
-
-    if all(par in noisedict for par in argmap):
-        phidiag = prior(f, df, *[noisedict[arg] for arg in argmap])
-
-        osgp = matrix.ConstantGP(matrix.NoiseMatrix1D_novar(phidiag), fmats)
-    else:
-        def priorfunc(params):
-            return prior(f, df, *[params[arg] for arg in argmap])
-        priorfunc.params = argmap
-
-        osgp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats)
-
-    osgp.pairs  = [(i1, i2) for i1 in range(len(psrs)) for i2 in range(i1 + 1, len(psrs))]
-    osgp.angles = [np.dot(psrs[i1].pos, psrs[i2].pos) for (i1, i2) in osgp.pairs]
-
-    return osgp
-
-
 # priors: these need to be jax functions
 
 def powerlaw(f, df, log10_A, gamma):

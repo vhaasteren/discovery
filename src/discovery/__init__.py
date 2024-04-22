@@ -9,7 +9,8 @@ from .matrix import *
 from .prior import *
 from .signals import *
 from .likelihood import *
+from .os import *
 from .solar import *
 from .pulsar import *
 
-__version__ = "0.1"
+__version__ = "0.2"

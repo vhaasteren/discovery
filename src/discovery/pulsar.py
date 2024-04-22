@@ -19,7 +19,7 @@ def read_chain(fileordir):
         return df
     else:
         # we'll assume it's a PTMCMC directory
-
+        dirname = fileordir
         pars = list(map(str.strip, open(f'{dirname}/pars.txt', 'r').readlines()))
 
         df = pd.read_csv(f'{dirname}/chain_1.0.txt', delim_whitespace=True,
