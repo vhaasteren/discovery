@@ -29,6 +29,10 @@ class OS:
         self.angles = [matrix.jnp.dot(self.pos[i], self.pos[j]) for (i,j) in self.pairs]
 
     @functools.cached_property
+    def params(self):
+        return self.os_rhosigma.params
+
+    @functools.cached_property
     def os_rhosigma(self):
         kernelsolves = [psl.N.make_kernelsolve(psl.y, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.Fs)]
 
