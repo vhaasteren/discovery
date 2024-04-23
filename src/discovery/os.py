@@ -122,7 +122,7 @@ class OS:
 
         getN = self.globalgp.Phi.getN
         components = self.globalgp.Fs[0].shape[1]    # needed because of makegp_fourier_allpsr
-        npsr, pairs = len(self.pos), self.pairs
+        pairs = self.pairs
 
         def get_rhosigma_complex(params):
             sN = jnp.sqrt(getN(params)[:components])
