@@ -25,13 +25,15 @@ def monopole_orfa(z):
 
 class OS:
     def __init__(self, gbl):
-        if gbl.globalgp is None:
-            raise ValueError('GlobalLikelihood passed to OS needs a globalgp.')
-
         self.psls = gbl.psls
-        self.globalgp = gbl.globalgp
 
-        self.pos = [matrix.jnparray(p) for p in self.globalgp.pos]
+        try:
+            self.gws = [psl.gw for psl in self.psls]
+            self.gwpar = [par for par in self.gws[0].gpcommon if 'log10_A' in par][0]
+            self.pos = [matrix.jnparray(psl.gw.pos) for psl in self.psls]
+        except AttributeError:
+            raise AttributeError("I cannot find the common GW GP in the pulsar likelihood objects.")
+
         self.pairs = [(i1, i2) for i1 in range(len(self.pos)) for i2 in range(i1 + 1, len(self.pos))]
         self.angles = [jnp.dot(self.pos[i], self.pos[j]) for (i,j) in self.pairs]
 
@@ -41,15 +43,12 @@ class OS:
 
     @functools.cached_property
     def os_rhosigma(self):
-        kernelsolves = [psl.N.make_kernelsolve(psl.y, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.Fs)]
-
-        getN = self.globalgp.Phi.getN
-        components = self.globalgp.Fs[0].shape[1]    # needed because of makegp_fourier_allpsr
-        pairs = self.pairs                           # better not close on self
+        kernelsolves = [psl.N.make_kernelsolve(psl.y, gw.F) for (psl, gw) in zip(self.psls, self.gws)]
+        getN = self.gws[0].Phi.getN   # use prior from first pulsar, assume all GW GP are the same
+        pairs = self.pairs
 
         def get_rhosigma(params):
-            # TO DO: make this work with makegp_fourier_global, or even better with a single psr getN
-            sN = jnp.sqrt(getN(params)[:components])
+            sN = jnp.sqrt(getN(params))
             ks = [k(params) for k in kernelsolves]
 
             ts = [jnp.dot(sN * ks[i][0], sN * ks[j][0]) for (i,j) in pairs]
@@ -66,11 +65,8 @@ class OS:
 
     @functools.cached_property
     def os(self):
-        # find the parameter that sets the GW amplitude
-        gwpar = [par for par in self.globalgp.Phi.params if 'log10_A' in par][0]
-
         os_rhosigma = self.os_rhosigma    # getos will close on os_rhosigma
-        angles = matrix.jnparray(self.angles)
+        gwpar, angles = self.gwpar, matrix.jnparray(self.angles)
 
         def get_os(params, orf=hd_orfa):
             rhos, sigmas = os_rhosigma(params)
@@ -92,10 +88,8 @@ class OS:
 
     @functools.cached_property
     def scramble(self):
-        gwpar = [par for par in self.globalgp.Phi.params if 'log10_A' in par][0]
-
         os_rhosigma = self.os_rhosigma    # getos will close on os_rhosigma
-        pairs = self.pairs
+        gwpar, pairs = self.gwpar, self.pairs
 
         def get_scramble(params, pos, orf=hd_orfa):
             rhos, sigmas = os_rhosigma(params)
@@ -118,14 +112,12 @@ class OS:
 
     @functools.cached_property
     def os_rhosigma_complex(self):
-        kernelsolves = [psl.N.make_kernelsolve(psl.y, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.Fs)]
-
-        getN = self.globalgp.Phi.getN
-        components = self.globalgp.Fs[0].shape[1]    # needed because of makegp_fourier_allpsr
+        kernelsolves = [psl.N.make_kernelsolve(psl.y, gw.F) for (psl, gw) in zip(self.psls, self.gws)]
+        getN = self.gws[0].Phi.getN
         pairs = self.pairs
 
         def get_rhosigma_complex(params):
-            sN = jnp.sqrt(getN(params)[:components])
+            sN = jnp.sqrt(getN(params))
             ks = [k(params) for k in kernelsolves]
 
             tsf = [sN[::2] * (k[0][::2] + 1j * k[0][1::2]) for k in ks]
@@ -144,11 +136,8 @@ class OS:
 
     @functools.cached_property
     def shift(self):
-        gwpar = [par for par in self.globalgp.Phi.params if 'log10_A' in par][0]
-
         os_rhosigma_complex = self.os_rhosigma_complex    # getos will close on os_rhosigma
-        angles = matrix.jnparray(self.angles)
-        pairs = self.pairs
+        gwpar, pairs, angles = self.gwpar, self.pairs, matrix.jnparray(self.angles)
 
         def get_shift(params, phases, orf=hd_orfa):
             rhos_complex, sigmas = os_rhosigma_complex(params)
@@ -174,18 +163,15 @@ class OS:
 
     @functools.cached_property
     def gx2eig(self):
-        kernelsolves = [psl.N.make_kernelsolve(psl.N.F, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.Fs)]
+        kernelsolves = [psl.N.make_kernelsolve(psl.N.F, gw.F) for (psl, gw) in zip(self.psls, self.gws)]
         phis = [psr.N.P_var.getN for psr in self.psls]
+        getN = self.gws[0].Phi.getN
 
-        getN = self.globalgp.Phi.getN
-        components = self.globalgp.Fs[0].shape[1]
-
-        gwpar = [par for par in self.globalgp.Phi.params if 'log10_A' in par][0]
         orfmat = matrix.jnparray([[signals.hd_orf(p1, p2) for p1 in self.pos] for p2 in self.pos])
-        pairs, orfs = self.pairs, [signals.hd_orf(self.pos[i], self.pos[j]) for i, j in self.pairs]
+        gwpar, pairs, orfs = self.gwpar, self.pairs, [signals.hd_orf(self.pos[i], self.pos[j]) for i, j in self.pairs]
 
         def get_gx2eig(params):
-            sN = jnp.sqrt(getN(params)[:components])
+            sN = jnp.sqrt(getN(params))
             ks = [k(params) for k in kernelsolves]
 
             A = 10**params[gwpar]

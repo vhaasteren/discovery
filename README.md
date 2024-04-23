@@ -62,6 +62,14 @@ _Discovery_ uses lightweight `Pulsar` objects saved as Arrow Feather files. To c
 - `makelogprior_uniform(params, [priordict])`: returns a function `logprior(params)` that evaluates the total log prior according to `priordict` (given, e.g., as `{'FourierGP_log10_A': [-18, -11]'}`). Some standard [`enterprise_extensions`](https://github.com/nanograv/enterprise_extensions) priors are included by default (e.g., `crn_log10_A, crn_gamma, gw_log10_A, gw_gamma, ...`). Parameters that are in the list `params` but are not in `priordict` and have no default are not included in the computation.
 - `sample_uniform(params, [priordict])`: creates a dictionary of random values for the parameters in the list `params`, using the uniform priors in `priordict` or in the system default. Fails if a parameter in `params` has no specification.
 
+## Optimal statistic (`os.py`)
+
+- `OS(gbl)`: creates an optimal statistic object, where `gbl` is a `GlobalLikelihood` in which each `PulsarLikelihood` has a `makegp_fourier` component named `gw` with at least the common parameter `gw_log10_A`. The prior and Fourier basis from that GP will be used to build the OS. If the `GlobalLikelihood` has a `globalgp`, it is unused.
+- `OS.os(params, [orfa])`: returns the dictionary `{'os': ..., 'os_sigma': ..., 'snr': ..., 'log10_A': ...}` as computed for `params`. `orfa` defaults to `hd_orfa` but can also be `dipole_orfa` or `monopole_orfa`—these are all functions of the cosine between pulsars. `OS.os` can be jitted and vmapped over params. (If one wishes to use the `orfa` argument, the jitting/vmapping syntax is more complicated: `jax.jit(os.os, static_argnums=1)` and `jax.vmap(os.os, in_axes=(0, None))`.)
+- `OS.scramble(params, pos, [orfa])`: returns the same dictionary as `OS.os`, using the pulsar positions in `pos` (either a list of three-vectors or an `npsr x 3` array). `OS.scramble` can be jitted and vmapped over params (`jax.vmap(os.scramble, (0, None))`) or positions (`jax.vmap(os.scramble, (None, 0))`).
+- `OS.shift(params, phases, [orfa])`: returns the same dictionary as `OS.os`, shifting the GW basis vectors by the phases in `phases` (an `npsr x ngw` array of floats in [0,2*pi]). `OS.shift` can be jitted and vmapped over params or phases.
+- `OS.gx2cdf(params, xs, cutoff=1e-6, limit=100, epsabs=1e-6)`: returns a vector of the GX2 OS CDF evaluated at the SNRs `xs`. The CDF is computed by considering only GPs (i.e., not white noise), using Imhof's method. The parameters `limit` and `epsabs` are passed to `scipy.integrate.quad`. If `cutoff` is a float, GX2 eigenvalues are limited to those larger than `cutoff`; if `cutoff` is an integer, only the `cutoff` largest eigenvalues are used. Currently this function cannot be jitted or vmapped.
+
 # Example usage
 
 The following implements a standard NANOGrav likelihood + prior for pulsar `psr`, with free parameters `['{psrname}_rednoise_gamma', '{psrname}_rednoise_log10_A', 'crn_gamma', 'crn_log10_A']`:

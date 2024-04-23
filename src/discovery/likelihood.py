@@ -62,6 +62,10 @@ class PulsarLikelihood:
             csm = noise
 
         if vgps:
+            for vgp in vgps:
+                if vgp.gpname == 'gw':
+                    self.gw = vgp
+
             if concat:
                 vgp = matrix.CompoundGP(vgps)
                 vsm = matrix.ShermanMorrisonKernel(csm, vgp.F, vgp.Phi)
