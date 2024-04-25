@@ -63,7 +63,7 @@ class PulsarLikelihood:
 
         if vgps:
             for vgp in vgps:
-                if vgp.gpname == 'gw':
+                if hasattr(vgp, 'gpname') and vgp.gpname == 'gw':
                     self.gw = vgp
 
             if concat:

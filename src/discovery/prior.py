@@ -1,6 +1,7 @@
 import re
 
 import numpy as np
+import pandas as pd
 
 from . import matrix
 jnp = matrix.jnp
