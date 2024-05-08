@@ -51,7 +51,7 @@ class PulsarLikelihood:
         noise, y = noise[0], y[0]
 
         if cgps:
-            if concat:
+            if len(cgps) > 1 and concat:
                 cgp = matrix.CompoundGP(cgps)
                 csm = matrix.ShermanMorrisonKernel(noise, cgp.F, cgp.Phi)
             else:
@@ -66,13 +66,15 @@ class PulsarLikelihood:
                 if hasattr(vgp, 'gpname') and vgp.gpname == 'gw':
                     self.gw = vgp
 
-            if concat:
+            if len(vgps) > 1 and concat:
                 vgp = matrix.CompoundGP(vgps)
                 vsm = matrix.ShermanMorrisonKernel(csm, vgp.F, vgp.Phi)
+                vsm.index = getattr(vgp, 'index', None)
             else:
                 vsm = csm
                 for vgp in vgps:
                     vsm = matrix.ShermanMorrisonKernel(vsm, vgp.F, vgp.Phi)
+                    vsm.index = getattr(vgp, 'index', None)
         else:
             vsm = csm
 
@@ -93,6 +95,54 @@ class PulsarLikelihood:
             del self.logL
         else:
             self.__dict__[name] = value
+
+    @functools.cached_property
+    def sample_conditional(self):
+        cond = self.conditional
+        index = self.N.index
+
+        def sample_cond(key, params):
+            mu, cf = cond(params)
+
+            key, subkey = matrix.jnpsplit(key)
+            c = mu + matrix.jsp.linalg.solve_triangular(cf[0].T, matrix.jnpnormal(subkey, mu.shape), lower=False)
+
+            return key, {par: c[sli] for par, sli in index.items()}
+
+        sample_cond.params = cond.params
+
+        return sample_cond
+
+    @functools.cached_property
+    def conditional(self):
+        P_var_inv = self.N.P_var.Phi_inv or self.N.P_var.make_inv()
+        ksolve = self.N.N.make_kernelsolve(self.y, self.N.F)
+
+        if not ksolve.params:
+            FtNmy, FtNmF = ksolve(params={})
+
+            def cond(params):
+                Pinv, _ = P_var_inv(params)
+                Sm = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv) + FtNmF
+                cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
+                mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+
+                return mu, cf
+
+            cond.params = P_var_inv.params
+        else:
+            def cond(params):
+                FtNmy, FtNmF = ksolve(params)
+                Pinv, _ = P_var_inv(params)
+                Sm = (matrix.jnp.diag(Pinv) if ndim == 1 else Pinv) + FtNmF
+                cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
+                mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+
+                return mu, cf
+
+            cond.params = sorted(ksolve.params) + P_var_inv.params
+
+        return cond
 
     @functools.cached_property
     def logL(self):

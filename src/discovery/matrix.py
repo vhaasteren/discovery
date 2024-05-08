@@ -169,14 +169,14 @@ def CompoundGP(gplist):
             F = np.hstack([gp.F for gp in gplist])
             PhiN = np.concatenate([gp.Phi.N for gp in gplist])
 
-            return ConstantGP(NoiseMatrix1D_novar(PhiN), F)
+            multigp = ConstantGP(NoiseMatrix1D_novar(PhiN), F)
         elif all(isinstance(gp.Phi, (NoiseMatrix1D_novar, NoiseMatrix2D_novar)) for gp in gplist):
             F = np.hstack([gp.F for gp in gplist])
             PhiN = jsp.linalg.block_diag(*[np.diag(gp.Phi.N) if isinstance(gp.Phi, NoiseMatrix1D_novar)
-                                                            else gp.Phi.N
+                                                             else gp.Phi.N
                                           for gp in gplist])
 
-            return ConstantGP(NoiseMatrix2D_novar(PhiN), F)
+            multigp = ConstantGP(NoiseMatrix2D_novar(PhiN), F)
     elif all(isinstance(gp, VariableGP) for gp in gplist):
         F = np.hstack([gp.F for gp in gplist])
 
@@ -185,7 +185,7 @@ def CompoundGP(gplist):
                 return jnp.concatenate([gp.Phi.getN(params) for gp in gplist])
             Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
-            return VariableGP(NoiseMatrix1D_var(Phi), F)
+            multigp = VariableGP(NoiseMatrix1D_var(Phi), F)
         elif all(isinstance(gp.Phi, (NoiseMatrix1D_var, NoiseMatrix2D_var)) for gp in gplist):
             def Phi(params):
                 # Phis = [Phifunc(params) for Phifunc in Phifuncs]
@@ -195,9 +195,20 @@ def CompoundGP(gplist):
                                                for gp in gplist])
             Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
-            return VariableGP(NoiseMatrix2D_var(Phi), F)
+            multigp = VariableGP(NoiseMatrix2D_var(Phi), F)
     else:
         raise NotImplementedError("Cannot concatenate these types of GPs.")
+
+    if all(hasattr(gp, 'index') for gp in gplist):
+        index, cnt = {}, 0
+        for vars in zip(*[gp.index.items() for gp in gplist]):
+            for var, sli in vars:
+                width = sli.stop - sli.start
+                index[var] = slice(cnt, cnt + width)
+                cnt = cnt + width
+        multigp.index = index
+
+    return multigp
 
 # sum delays
 
@@ -272,6 +283,7 @@ class NoiseMatrix1D_var(VariableKernel):
     def __init__(self, getN):
         self.getN = getN
         self.params = getN.params
+        self.Phi_inv = None
 
     def make_kernelproduct(self, y):
         y2, getN = jnparray(y**2), self.getN

@@ -216,6 +216,7 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
     priorfunc.params = argmap
 
     gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmat)
+    gp.index = {f'{psr.name}_{name}_coefficients({2*components})': slice(0,2*components)}
     gp.name, gp.pos = psr.name, psr.pos
     gp.gpname, gp.gpcommon = name, common
 
