@@ -235,66 +235,6 @@ class GlobalLikelihood:
         return sampler
 
     @functools.cached_property
-    def os(self):
-        os_rhosigma = self.os_rhosigma
-
-        gwpar = [par for par in self.globalgp.Phi.params if 'log10_A' in par][0]
-
-        pos = self.globalgp.pos
-        pairs = [(i1, i2) for i1 in range(len(pos)) for i2 in range(i1 + 1, len(pos))]
-        # angles = [np.dot(pos[i1], pos[i2]) for (i1, i2) in pairs]
-        orfs = matrix.jnparray([signals.hd_orf(pos[i1], pos[i2]) for (i1, i2) in pairs])
-
-        def getos(params):
-            rhos, sigmas = os_rhosigma(params)
-
-            gwnorm = 10**(2.0 * params[gwpar])
-            rhos, sigmas = gwnorm * rhos, gwnorm * sigmas
-
-            os = matrix.jnp.sum(rhos * orfs / sigmas**2) / matrix.jnp.sum(orfs**2 / sigmas**2)
-            os_sigma = 1.0 / matrix.jnp.sqrt(matrix.jnp.sum(orfs**2 / sigmas**2))
-            snr = os / os_sigma
-
-            return {'os': os, 'os_sigma': os_sigma, 'snr': snr, 'rhos': rhos, 'sigmas': sigmas,
-                    'log10_A': params[gwpar]}
-
-        getos.params = os_rhosigma.params
-        # getos.angles = angles
-
-        return getos
-
-    # rho_ij = y_i Cmi(theta) Fi Phi Ftj Cmj(theta) y_j
-    # sigma_ij = tr Fti Cmi(theta) Fi Phi Ftj Cmj(theta) Fj Phi
-    @functools.cached_property
-    def os_rhosigma(self):
-        if self.globalgp is None:
-            raise ValueError('GlobalLikelihood.os needs a globalgp.')
-        else:
-            pos = self.globalgp.pos
-            pairs = [(i1, i2) for i1 in range(len(pos)) for i2 in range(i1 + 1, len(pos))]
-
-            kernelsolves = [psl.N.make_kernelsolve(psl.y, Tmat) for (psl, Tmat) in zip(self.psls, self.globalgp.Fs)]
-
-            getN = self.globalgp.Phi.getN
-            components = self.globalgp.Fs[0].shape[1]
-
-            def rhosigma(params):
-                sN = matrix.jnp.sqrt(getN(params)[:components])
-                ks = [k(params) for k in kernelsolves]
-
-                ts = [matrix.jnp.dot(sN * ks[i][0], sN * ks[j][0]) for (i,j) in pairs]
-
-                ds = [sN[:,matrix.jnp.newaxis] * k[1] * sN[matrix.jnp.newaxis,:] for k in ks]
-                bs = [matrix.jnp.trace(ds[i] @ ds[j]) for (i,j) in pairs]
-
-                return (matrix.jnp.array(ts) / matrix.jnp.array(bs),
-                        1.0 / matrix.jnp.sqrt(matrix.jnp.array(bs)))
-
-            rhosigma.params = sorted(set.union(*[set(k.params) for k in kernelsolves], getN.params))
-
-            return rhosigma
-
-    @functools.cached_property
     def logL(self):
         if self.globalgp is None:
             logls = [psl.logL for psl in self.psls]
