@@ -202,6 +202,15 @@ def dmfourierbasis(psr, components, T=None, fref=1400.0):
 
     return f, df, fmat * Dm[:, None]
 
+def dmfourierbasis_alpha(psr, components, T=None, fref=1400.0):
+    f, df, fmat = fourierbasis(psr, components, T)
+
+    fmat, fnorm = matrix.jnparray(fmat), matrix.jnparray(fref / psr.freqs)
+    def fmatfunc(alpha):
+        return fmat * fnorm[:, None]**alpha
+
+    return f, df, fmatfunc
+
 def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='fourierGP'):
     argspec = inspect.getfullargspec(prior)
     argmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
@@ -215,7 +224,19 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
         return prior(f, df, *[params[arg] for arg in argmap])
     priorfunc.params = argmap
 
-    gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmat)
+    # TODO: I'd like my makegp_fourier to be cleaner than this
+    # also, the argmap code can be modularized
+    if callable(fmat):
+        argspec = inspect.getfullargspec(fmat)
+        fargmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
+                   (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+                   for arg in argspec.args if arg not in ['f', 'df']]
+
+        def fmatfunc(params):
+            return fmat(*[params[arg] for arg in fargmap])
+        fmatfunc.params = fargmap
+
+    gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmatfunc if callable(fmat) else fmat)
     gp.index = {f'{psr.name}_{name}_coefficients({2*components})': slice(0,2*components)}
     gp.name, gp.pos = psr.name, psr.pos
     gp.gpname, gp.gpcommon = name, common

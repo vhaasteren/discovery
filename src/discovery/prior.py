@@ -22,8 +22,9 @@ priordict_standard = {
     "crn_gamma.*": [0, 7],
     "gw_(.*_)?log10_A": [-18, -11],
     "gw_(.*_)?gamma": [0, 7],
-    "dmgp_log10_A": [-20, -11],
-    "dmgp_gamma": [0, 7],
+    "(.*_)?dmgp_log10_A": [-20, -11],
+    "(.*_)?dmgp_gamma": [0, 7],
+    "(.*_)?dmgp_alpha": [1, 3],
     "crn_log10_rho": [-9, -4],
     "gw_(.*_)?log10_rho": [-9, -4],
 }
