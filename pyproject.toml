@@ -18,13 +18,19 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10"
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dynamic = ["version"]
-
-[project.optional-dependencies]
-spark = [
-    "pyspark>=3.0.0"
+dependencies = [
+    "jax[cpu]~=0.4",
+    "scipy",
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "optax",
+    "equinox",
+    "tqdm",
 ]
+[project.optional-dependencies]
 test = [
     "bandit[toml]==1.7.5",
     "black==23.3.0",
@@ -43,6 +49,13 @@ test = [
     "pytest==7.3.1",
     "pytest-github-actions-annotate-failures",
     "shellcheck-py==0.9.0.5"
+]
+cuda = [
+    "jax[cuda12]",
+]
+mpi = [
+    "mpi4py",
+    "mpi4jax",
 ]
 
 [project.urls]
@@ -120,39 +133,27 @@ markers = [
     "integration: marks as integration test",
     "notebooks: marks as notebook test",
     "gpu: marks as gpu test",
-    "spark: marks tests which need Spark",
     "slow: marks tests as slow",
     "unit: fast offline tests",
 ]
 
 [tool.tox]
 legacy_tox_ini = """
+
 [tox]
-envlist = py, integration, spark, all
+envlist = py3{9,10,11,12}
+
+[gh-actions]
+python =
+    3.9: py39
+    3.10: py310
+    3.11: py311
+    3.12: py312
 
 [testenv]
 commands =
-    pytest -m "not integration and not spark" {posargs}
-
-[testenv:integration]
-commands =
-    pytest -m "integration" {posargs}
-
-[testenv:spark]
-extras = spark
-setenv =
-       PYSPARK_DRIVER_PYTHON = {envpython}
-       PYSPARK_PYTHON = {envpython}
-commands =
-    pytest -m "spark" {posargs}
-
-[testenv:all]
-extras = all
-setenv =
-       PYSPARK_DRIVER_PYTHON = {envpython}
-       PYSPARK_PYTHON = {envpython}
-commands =
-    pytest {posargs}
+    pytest -m "integration and not gpu" {posargs}
+extras = test
 """
 
 [tool.pylint]
@@ -251,7 +252,7 @@ check-str-concat-over-line-jumps="no"
 
 [tool.pylint.'TYPECHECK']
 contextmanager-decorators="contextlib.contextmanager"
-generated-members="numpy.*,np.*,pyspark.sql.functions,collect_list"
+generated-members="numpy.*,np.*,collect_list"
 ignore-mixin-members="yes"
 ignore-none="yes"
 ignore-on-opaque-inference="yes"
