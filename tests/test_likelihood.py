@@ -8,7 +8,6 @@ from pathlib import Path
 import discovery as ds
 import jax
 import pytest
-from enterprise_extensions import models
 
 
 class TestLikelihood:
@@ -51,22 +50,21 @@ class TestLikelihood:
         # Get the jitted discovery log-likelihood
         jlogl = jax.jit(gl.logL)
 
-        # Construct an enterprise PTA object
-        pta = models.model_2a(
-            psrs,
-            noisedict=reduce(operator.or_, [psr.noisedict for psr in psrs], {}),
-            components=30,
-            n_gwbfreqs=14,
-            Tspan=tspan,
-            tm_marg=True,
-            tm_svd=True,
-        )
+        # Set parameters to feed likelihood
+        initial_position = {
+            "B1855+09_red_noise_gamma": 6.041543719234379,
+            "B1855+09_red_noise_log10_A": -14.311870465932676,
+            "B1953+29_red_noise_gamma": 2.037363188329115,
+            "B1953+29_red_noise_log10_A": -16.748409409147907,
+            "gw_gamma": 1.6470255693110927,
+            "gw_log10_A": -14.236953140132435,
+        }
 
-        # Get parameters to feed likelihood
-        initial_position = ds.prior.sample_uniform(gl.logL.params)
+        # Enterprise log-likelihood for this choice of parameters
+        enterprise_ll = 145392.54369264
 
         # Find the difference between enterprise and discovery likelihoods
-        ll_difference = pta.get_lnlikelihood(initial_position) - jlogl(initial_position)
+        ll_difference = enterprise_ll - jlogl(initial_position)
 
         # There is a constant offset of ~ -52.4
         offset = -52.4
