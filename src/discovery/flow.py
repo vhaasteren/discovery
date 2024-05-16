@@ -16,8 +16,9 @@ import flowjax.distributions
 
 
 # modified from flowjax/train/losses.py
+# obsolete, use ElboLoss factory
 
-class ElboLoss:
+class ElboLossClass:
     """Negative evidence lower bound (ELBO), approximated using samples.
 
     Args:
@@ -55,6 +56,16 @@ class ElboLoss:
         target_density = jax.vmap(self.target)(samples)
         return (log_probs - beta * target_density).mean()
 
+def ElboLoss(target, num_samples):
+    nbatch  = num_samples
+    vtarget = jax.vmap(target)
+
+    def theloss(params, static, key, beta):
+        dist = eqx.combine(params, static)
+        samples, log_probs = dist.sample_and_log_prob(key, (nbatch,))
+        return (log_probs - beta * vtarget(samples)).mean()
+
+    return theloss
 
 # modified from flowjax/train/train_utils.py to take combined loss + gradient,
 # and to average over repeated minibatches
@@ -62,7 +73,7 @@ class ElboLoss:
 def step(params: PyTree,
          static: PyTree,
          key: jax.Array,
-         beta: float,
+         beta: jax.Array,
          optimizer: optax.GradientTransformation,
          opt_state: PyTree,
          gradloss_fn: collections.abc.Callable,
@@ -102,7 +113,7 @@ def step(params: PyTree,
 class VariationalFit:
     def __init__(self, dist, loss_fn, multibatch=1, optimizer=None, learning_rate=5e-4, annealing_schedule=None, patience=100, show_progress=True):
         self.dist, self.loss_fn = dist, loss_fn
-        self.gradloss_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss_fn))
+        # self.gradloss_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss_fn)) - see below
         self.multibatch = multibatch
 
         self.optimizer = optimizer or optax.adam(learning_rate)
@@ -110,6 +121,10 @@ class VariationalFit:
         self.opt_state = self.optimizer.init(params)
         self.annealing_schedule = annealing_schedule or (lambda iter: 1.0)
         self.patience = patience
+
+        # AOT: https://jax.readthedocs.io/en/latest/aot.html - seems to avoid recompilation
+        key = jax.random.PRNGKey(42)
+        self.gradloss_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss_fn)).lower(params, static, key, jnp.asarray(1.0)).compile()
 
         self.show_progress = show_progress
 
