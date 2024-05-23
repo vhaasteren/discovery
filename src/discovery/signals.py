@@ -402,7 +402,8 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
 
         # if we're not in the pixel-basis case we can take a shortcut in making the inverse
         if orfmat.ndim == 2:
-            invorf, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
+            # invorf, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
+            invorf, orflogdet = matrix.jnparray(np.linalg.inv(orfmat)), np.linalg.slogdet(orfmat)[1]
             def invprior(params):
                 invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
 
