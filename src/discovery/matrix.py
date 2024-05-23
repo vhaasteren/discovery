@@ -5,8 +5,11 @@ import jax
 import jax.numpy
 import jax.scipy
 
-def config(backend):
-    global jnp, jsp, jnparray, intarray, jnpkey, jnpsplit, jnpnormal
+def config(**kwargs):
+    global jnp, jsp, jnparray, jnpzeros, intarray, jnpkey, jnpsplit, jnpnormal
+    global matrix_factor, matrix_solve, matrix_norm
+
+    backend = kwargs.get('backend')
 
     if backend == 'numpy':
         jnp, jsp = np, sp
@@ -29,7 +32,17 @@ def config(backend):
         jnpsplit  = jax.random.split
         jnpnormal = jax.random.normal
 
-config('jax')
+    if factor == 'cholesky':
+        matrix_factor = jsp.linalg.cho_factor
+        matrix_solve  = jsp.linalg.cho_solve
+        matrix_norm   = 2.0
+    elif factor == 'lu':
+        matrix_factor = jsp.linalg.lu_factor
+        matrix_solve  = jsp.linalg.lu_solve
+        matrix_norm   = 1.0
+
+config(backend='jax', factor='cholesky')
+
 
 def rngkey(seed):
     return jnpkey(seed)
@@ -433,8 +446,8 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         self.NmF, ldN = N.solve_2d(F)
         FtNmF = F.T @ self.NmF
         Pinv, ldP = P.inv()
-        self.cf = sp.linalg.cho_factor(Pinv + FtNmF)
-        self.ld = ldN + ldP + 2.0 * np.sum(np.log(np.diag(self.cf[0])))
+        self.cf = matrix_factor(Pinv + FtNmF)
+        self.ld = ldN + ldP + matrix_norm * np.sum(np.log(np.diag(self.cf[0])))
 
         self.params = []
 
@@ -454,7 +467,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         return sample
 
     def make_kernelproduct(self, y):
-        Nmy = self.N.solve_1d(y)[0] - self.NmF @ jsp.linalg.cho_solve(self.cf, self.NmF.T @ y)
+        Nmy = self.N.solve_1d(y)[0] - self.NmF @ matrix_solve(self.cf, self.NmF.T @ y)
         product = -0.5 * y @ Nmy - 0.5 * self.ld
 
         # closes on product
@@ -614,10 +627,10 @@ class ShermanMorrisonKernel_varFP(VariableKernel):
             NmFty = NmF.T @ y
 
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
-            ytXy = NmFty.T @ jsp.linalg.cho_solve(cf, NmFty)
+            cf = matrix_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
 
         kernelproduct.params = F_var.params + P_var_inv.params
 
@@ -694,10 +707,10 @@ class ShermanMorrisonKernel_varP(VariableKernel):
             NmFty = NmF.T @ yp
 
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
-            ytXy = NmFty.T @ jsp.linalg.cho_solve(cf, NmFty)
+            cf = matrix_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
 
         kernel.params = delay.params + P_var_inv.params
 
@@ -733,10 +746,10 @@ class ShermanMorrisonKernel_varP(VariableKernel):
 
         def kernelsolve(params):
             Pinv, _ = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
+            cf = matrix_factor(Pinv + FtNmF)
 
-            TtSy = TtNmy - TtNmF @ jsp.linalg.cho_solve(cf, FtNmy)
-            TtST = TtNmT - TtNmF @ jsp.linalg.cho_solve(cf, FtNmT)
+            TtSy = TtNmy - TtNmF @ matrix_solve(cf, FtNmy)
+            TtST = TtNmT - TtNmF @ matrix_solve(cf, FtNmT)
 
             return TtSy, TtST
 
@@ -758,10 +771,10 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         # closes on P_var_inv, FtNmF, NmFty, ytNmy, ldN
         def kernelproduct(params):
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
-            ytXy = NmFty.T @ jsp.linalg.cho_solve(cf, NmFty)
+            cf = matrix_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
 
         kernelproduct.params = P_var_inv.params
 
@@ -801,12 +814,12 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         # closes on P_var_inv, FtNmF, FtNmy, FtMmT, ytNmy, TtNmy, TtNmT, TtNmF
         def kernelterms(params):
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
+            cf = matrix_factor(Pinv + FtNmF)
 
-            sol = jsp.linalg.cho_solve(cf, FtNmy)
-            sol2 = jsp.linalg.cho_solve(cf, FtNmT)
+            sol = matrix_solve(cf, FtNmy)
+            sol2 = matrix_solve(cf, FtNmT)
 
-            a = -0.5 * (ytNmy - FtNmy.T @ sol) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            a = -0.5 * (ytNmy - FtNmy.T @ sol) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
             b = TtNmy - TtNmF @ sol
             c = TtNmT - TtNmF @ sol2
 
@@ -836,14 +849,14 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
             Pinv, ldP = P_var_inv(params)            # Pinv.shape = FtNmF.shape = [npsr, ngp, ngp]
 
             i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
-            cf = jsp.linalg.cho_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
 
             # cf = jsp.linalg.cho_factor(Pinv + FtNmF)
 
-            ytXy = jnp.sum(NmFty * jsp.linalg.cho_solve(cf, NmFty)) # was NmFty.T @ jsp.linalg.cho_solve(...)
+            ytXy = jnp.sum(NmFty * matrix_solve(cf, NmFty)) # was NmFty.T @ jsp.linalg.cho_solve(...)
 
             i1, i2 = jnp.diag_indices(cf[0].shape[1], ndim=2) # it's hard to vectorize numpy.diag!
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + jnp.sum(ldP) + 2.0 * jnp.sum(jnp.log(cf[0][:,i1,i2])))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + jnp.sum(ldP) + matrix_norm * jnp.sum(jnp.log(cf[0][:,i1,i2])))
 
         kernelproduct.params = P_var_inv.params
 
@@ -879,13 +892,13 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
             Pinv, ldP = P_var_inv(params)
 
             i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
-            cf = jsp.linalg.cho_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
 
-            sol = jsp.linalg.cho_solve(cf, FtNmy)
-            sol2 = jsp.linalg.cho_solve(cf, FtNmT)
+            sol = matrix_solve(cf, FtNmy)
+            sol2 = matrix_solve(cf, FtNmT)
 
             i1, i2 = jnp.diag_indices(cf[0].shape[1], ndim=2)
-            a = -0.5 * (ytNmy - jnp.sum(FtNmy * sol)) - 0.5 * (ldN + jnp.sum(ldP) + 2.0 * jnp.sum(jnp.log(cf[0][:,i1,i2])))
+            a = -0.5 * (ytNmy - jnp.sum(FtNmy * sol)) - 0.5 * (ldN + jnp.sum(ldP) + matrix_norm * jnp.sum(jnp.log(cf[0][:,i1,i2])))
             b = TtNmy - jnp.sum(TtNmF * sol[:, jnp.newaxis, :], axis=2)
             c = TtNmT - TtNmF @ sol2 # fine as is!
 

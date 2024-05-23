@@ -450,11 +450,10 @@ class GlobalLikelihood:
 
 
 class ArrayLikelihood:
-    def __init__(self, psls, commongp, globalgp=None, factorization='cholesky'):
+    def __init__(self, psls, commongp, globalgp=None):
         self.psls = psls
         self.commongp = commongp # will want to combine if given a list
         self.globalgp = globalgp # will want to combine if given a list
-        self.factorization = factorization
 
     @functools.cached_property
     def logL(self):
@@ -493,12 +492,8 @@ class ArrayLikelihood:
                 #               Pinv)
                 #    cf = matrix.jsp.linalg.cho_factor(Pinv)
 
-                if factorization == 'cholesky':
-                    cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
-                    return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
-                elif factorization == 'lu':
-                    cf = matrix.jsp.linalg.lu_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
-                    return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.lu_solve(cf, FtNmy) - ldP - matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
+                cf = matrix.matrix_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
+                return p0 + 0.5 * (FtNmy.T @ matrix.matrix_solve(cf, FtNmy) - ldP - matrix.matrix_norm * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
 
             loglike.params = sorted(kterms.params + P_var_inv.params)
 
