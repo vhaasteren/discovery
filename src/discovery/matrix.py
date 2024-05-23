@@ -32,6 +32,8 @@ def config(**kwargs):
         jnpsplit  = jax.random.split
         jnpnormal = jax.random.normal
 
+    factor = kwargs.get('factor')
+
     if factor == 'cholesky':
         matrix_factor = jsp.linalg.cho_factor
         matrix_solve  = jsp.linalg.cho_solve
