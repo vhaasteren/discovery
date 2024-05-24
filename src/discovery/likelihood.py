@@ -469,7 +469,6 @@ class ArrayLikelihood:
 
             npsr = len(self.globalgp.Fs)
             ngp = self.globalgp.Fs[0].shape[1]
-            factorization = self.factorization
 
             def loglike(params):
                 terms = kterms(params)
