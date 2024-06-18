@@ -243,6 +243,7 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
 
     return gp
 
+# for use in ArrayLikelihood. Same process for all pulsars.
 def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, common=[], vector=False, name='fourierCommonGP'):
     argspec = inspect.getfullargspec(prior)
 
@@ -250,7 +251,7 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
         argmap = [arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else
                   f'{name}_{arg}({len(psrs)})' for arg in argspec.args if arg not in ['f', 'df']]
     else:
-        argmaps = [arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else [f'{psr.name}_{name}_{arg}' for psr in psrs]
+        argmaps = [[arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}' for psr in psrs]
                    for arg in argspec.args if arg not in ['f', 'df']]
 
     fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
@@ -266,7 +267,7 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
         priorfunc.params = sorted(argmap)
     else:
         vprior = jax.vmap(prior, in_axes=[None, None] +
-                                        [0 if isinstance(argmap, list) else None for argmap in argmaps])
+                                         [0 if isinstance(argmap, list) else None for argmap in argmaps])
 
         def priorfunc(params):
             vpars = [matrix.jnparray([params[arg] for arg in argmap]) if isinstance(argmap, list) else params[argmap]
@@ -275,9 +276,36 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
 
         priorfunc.params = sorted(set(sum([argmap if isinstance(argmap, list) else [argmap] for argmap in argmaps], [])))
 
-    return matrix.VariableGP(matrix.VectorNoiseMatrix1D_var(priorfunc), fmats)
+    gp = matrix.VariableGP(matrix.VectorNoiseMatrix1D_var(priorfunc), fmats)
+    gp.index = {f'{psr.name}_{name}_coefficients({2*components})': slice(2*components*i,2*components*(i+1))
+                for i, psr in enumerate(psrs)}
+
+    return gp
 
 # component-wise GP
+
+# def makegp_fourier_components(psr, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='fourierGP'):
+#     argspec = inspect.getfullargspec(prior)
+#     argmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
+#               (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+#               for arg in argspec.args if arg not in ['f', 'df']]
+
+#     argname = f'{psr.name}_{name}_coefficients({components*2})'
+
+#     f, df, fmat = fourierbasis(psr, components, T)
+
+#     f, df = matrix.jnparray(f), matrix.jnparray(df)
+#     def priorfunc(params):
+#         return prior(f, df, *[params[arg] for arg in argmap])
+#     priorfunc.params = argmap
+
+#     def componentfunc(params):
+#         return params[argname]
+#     componentfunc.params = [argname]
+
+#     Fmat = matrix.jnparray(fmat)
+
+#     return matrix.ComponentGP(matrix.NoiseMatrix1D_var(priorfunc), Fmat, componentfunc)
 
 def makegp_fourier_delay(psr, components, T=None, name='fourierGP'):
     argname = f'{psr.name}_{name}_mean({components*2})'

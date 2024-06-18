@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import numpy as np
 import scipy as sp
 
@@ -74,6 +76,12 @@ class ConstantGP:
 class VariableGP:
     def __init__(self, Phi, F):
         self.Phi, self.F = Phi, F
+
+# class ComponentGP:
+#     def __init__(self, Phi, F, cfunc):
+#         self.Phi, self.F, self.cfunc = Phi, F, cfunc
+
+
 
 # note that all factories that return a GlobalVariableGP should define its `index`
 # as a dictionary of component vector names to slices within the Fs matrix, which
@@ -175,6 +183,56 @@ def CompoundGlobalGP(gplist):
     return multigp
 
 # concatenate GPs
+
+def VectorCompoundGP(gplist):
+    if gplist is None or not isinstance(gplist, Sequence):
+        return gplist
+    elif len(gplist) == 1:
+        return gplist[0]
+
+    if all(isinstance(gp, (VariableGP, GlobalVariableGP)) for gp in gplist):
+        # each gp.F is a tuple of F matrices, one for each pulsar
+        # globalgp has gp.Fs instead
+        F = [np.hstack(Fs) for Fs in zip(*[gp.F if hasattr(gp, 'F') else gp.Fs for gp in gplist])]
+
+        if all(isinstance(gp.Phi, VectorNoiseMatrix1D_var) for gp in gplist):
+            def Phi(params):
+                return jnp.hstack([gp.Phi.getN(params) for gp in gplist])
+            Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+
+            multigp = VariableGP(VectorNoiseMatrix1D_var(Phi), F)
+        elif all(isinstance(gp.Phi, (VectorNoiseMatrix1D_var, NoiseMatrix2D_var)) for gp in gplist):
+            cvarslist = [list(gp.index) for gp in gplist]
+            pinvlist = [gp.Phi.make_inv() for gp in gplist]
+
+            def priorfunc(params):
+                ret = 0.0
+
+                for cvars, pinv in zip(cvarslist, pinvlist):
+                    Pm, ldP = pinv(params)
+
+                    if Pm.shape[0] == Pm.shape[1]: # 2D prior
+                        c = jnp.concatenate([params[cvar] for cvar in cvars])
+                        ret = ret - 0.5 * c @ Pm @ c - 0.5 * ldP
+                    else: # batched prior
+                        c = jnp.array([params[cvar] for cvar in cvars])
+                        ret = ret - 0.5 * jnp.sum(c * Pm * c) - 0.5 * jnp.sum(ldP)
+
+                return ret
+
+            priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+
+            multigp = VariableGP(None, F)
+            multigp.prior = priorfunc
+        else:
+            raise TypeError('VectorCompoundGP works only with VectorNoiseMatrix1D_var so far.')
+    else:
+        raise TypeError('VectorCompoundGP works only with VariableGPs so far.')
+
+    multigp.index = [dict(g) for g in zip(*[gp.index.items() for gp in gplist])]
+
+    return multigp
+
 def CompoundGP(gplist):
     if len(gplist) == 1:
         return gplist[0]
@@ -422,6 +480,14 @@ class VectorNoiseMatrix1D_var(VariableKernel):
         return inv
 
 
+# now obsolete
+# def ComponentKernel(N, F, P, c):
+#     if isinstance(N, ConstantKernel) and isinstance(P, VariableKernel):
+#         return ComponentKernel_varP(N, F, P, c)
+#     else:
+#         raise TypeError("N must be a ConstantKernel and P a VariableKernel")
+
+
 def ShermanMorrisonKernel(N, F, P):
     if isinstance(N, ConstantKernel) and isinstance(P, ConstantKernel):
         return ShermanMorrisonKernel_novar(N, F, P)
@@ -431,13 +497,38 @@ def ShermanMorrisonKernel(N, F, P):
         else:
             return ShermanMorrisonKernel_varFP(N, F, P)
     else:
-        raise TypeError("N must be a ConstantMatrix and P a VariableMatrix")
+        raise TypeError("N must be a ConstantKernel and P a VariableKernel")
 
-# the first argument of ShermanMorrisonKernel will be
 
-# VariableKernel should have methods
-# - make_kernelproduct
-# - make_kernelterms
+# this is obsolete since the functionality was moved to logL_gpcomponent
+# class ComponentKernel_varP:
+#     def __init__(self, N, F, P_var, c):
+#         self.N, self.F, self.P_var, self.c = N, F, P_var, c
+
+#     def make_kernelproduct(self, y):
+#         # -0.5 yt Nm y + yt Nm F a - 0.5 ct Ft Nm F c - 0.5 log |2 pi N| - 0.5 cT Pm c - 0.5 log |2 pi P|
+
+#         NmF, ldN = self.N.solve_2d(self.F)
+#         FtNmF = self.F.T @ NmF
+#         NmFty = NmF.T @ y
+
+#         Nmy, ldN = self.N.solve_1d(y)
+#         ytNmy = y @ Nmy
+
+#         ytNmy, NmFty, FtNmF = jnparray(ytNmy), jnparray(NmFty), jnparray(FtNmF)
+#         P_inv = self.P_var.make_inv()
+#         cfunc = self.c
+
+#         def kernelproduct(params):
+#             c = cfunc(params)
+#             Pm, ldP = P_inv(params) # note Pm is 2D
+
+#             return (-0.5 * ytNmy + c @ NmFty - 0.5 * c @ (FtNmF @ c)
+#                     -0.5 * ldN - 0.5 * c @ (Pm @ c) - 0.5 * ldP)    # assuming Pm is 1D
+#         kernelproduct.params = sorted(P_inv.params + cfunc.params)
+
+#         return kernelproduct
+
 
 class ShermanMorrisonKernel_novar(ConstantKernel):
     def __init__(self, N, F, P):
@@ -782,6 +873,31 @@ class ShermanMorrisonKernel_varP(VariableKernel):
 
         return kernelproduct
 
+    def make_kernelproduct_gpcomponent(self, y):
+        # -0.5 yt Nm y + yt Nm F a - 0.5 ct Ft Nm F c - 0.5 log |2 pi N| - 0.5 cT Pm c - 0.5 log |2 pi P|
+
+        NmF, ldN = self.N.solve_2d(self.F)
+        FtNmF = self.F.T @ NmF
+        NmFty = NmF.T @ y
+
+        Nmy, ldN = self.N.solve_1d(y)
+        ytNmy = y @ Nmy
+
+        ytNmy, NmFty, FtNmF = jnparray(ytNmy), jnparray(NmFty), jnparray(FtNmF)
+        P_inv = self.P_var.make_inv()
+
+        cvars = list(self.index.keys())
+
+        def kernelproduct(params):
+            c = jnp.concatenate([params[cvar] for cvar in cvars])
+            Pm, ldP = P_inv(params)
+
+            return (-0.5 * ytNmy + c @ NmFty - 0.5 * c @ (FtNmF @ c)
+                    -0.5 * ldN - 0.5 * c @ (Pm @ c) - 0.5 * ldP)    # note Pm is 2D
+        kernelproduct.params = sorted(P_inv.params + cvars)
+
+        return kernelproduct
+
     # makes a function that returns the tuple
     # * -0.5 (yt Nm y - yt Nm F (Phi + Ft Nm F)^-1 y - 0.5 (logdet N + logdet Phi + logdet S)
     # * Tt (Phi + Ft Nm F)^-1 y
@@ -861,6 +977,45 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
             return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + jnp.sum(ldP) + matrix_norm * jnp.sum(jnp.log(cf[0][:,i1,i2])))
 
         kernelproduct.params = P_var_inv.params
+
+        return kernelproduct
+
+    def make_kernelproduct_gpcomponent(self, ys):
+        # -0.5 yt Nm y + yt Nm F a - 0.5 ct Ft Nm F c - 0.5 log |2 pi N| - 0.5 cT Pm c - 0.5 log |2 pi P|
+
+        NmFs, ldNs = zip(*[N.solve_2d(F) for N, F in zip(self.Ns, self.Fs)])
+        FtNmFs = [F.T @ NmF for F, NmF in zip(self.Fs, NmFs)]
+
+        Nmys, _  = zip(*[N.solve_1d(y) for N, y in zip(self.Ns, ys)])
+        ytNmys = [y @ Nmy for y, Nmy in zip(ys, Nmys)]
+        NmFtys = [NmF.T @ y for NmF, y in zip(NmFs, ys)]
+
+        FtNmF, NmFty = jnparray(FtNmFs), jnparray(NmFtys)
+        ytNmy, ldN = float(sum(ytNmys)), float(sum(ldNs))
+        cvarsall = self.index if isinstance(self.index, list) else [self.index]
+
+        if hasattr(self, 'prior'):
+            P_var_prior = self.prior
+
+            def kernelproduct(params):
+                c = jnp.array([jnp.concatenate([params[cvar] for cvar in cvars]) for cvars in cvarsall])
+                logpr = P_var_prior(params)
+
+                return (-0.5 * ytNmy + jnp.sum(c * NmFty) - 0.5 * jnp.einsum('ij,ijk,ik', c, FtNmF, c)
+                        -0.5 * ldN - logpr) # note Pm is 1D
+
+            kernelproduct.params = sorted(P_var_prior.params + sum([list(cvars) for cvars in cvarsall], []))
+        else:
+            P_var_inv = self.P_var.make_inv()
+
+            def kernelproduct(params):
+                c = jnp.array([jnp.concatenate([params[cvar] for cvar in cvars]) for cvars in cvarsall])
+                Pm, ldP = P_var_inv(params)
+
+                return (-0.5 * ytNmy + jnp.sum(c * NmFty) - 0.5 * jnp.einsum('ij,ijk,ik', c, FtNmF, c)
+                        -0.5 * ldN - 0.5 * jnp.sum(c * Pm * c) - 0.5 * jnp.sum(ldP)) # note Pm is 1D
+
+            kernelproduct.params = sorted(P_var_inv.params + sum([list(cvars) for cvars in cvarsall], []))
 
         return kernelproduct
 
