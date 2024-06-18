@@ -305,7 +305,7 @@ def CompoundDelay(delaylist):
 class NoiseMatrix1D_novar(ConstantKernel):
     def __init__(self, N):
         self.N = N
-        self.ld = np.sum(jnp.log(N))
+        self.ld = jnp.sum(jnp.log(N))
 
         self.params = []
 
@@ -319,7 +319,7 @@ class NoiseMatrix1D_novar(ConstantKernel):
         return kernelproduct
 
     def inv(self):
-        return np.diag(1.0 / self.N), self.ld
+        return jnp.diag(1.0 / self.N), self.ld
 
     def make_sqrt(self):
         sN = jnp.sqrt(self.N)
@@ -1186,22 +1186,19 @@ class ShermanMorrisonKernel_varN(VariableKernel):
 
 
         N_var_inv = self.N_var.make_inv()
-        F = self.F
+        F = jnparray(self.F)
         P = self.P
         # closes on N_solve_1d, NmF, cf, ld
         def solve_1d(params, y):
             Ninv, ldN = N_var_inv(params)
-            NmF = Ninv @ self.F
+            NmF = Ninv @ F
             Pinv, ldP = P.inv()
             cf = matrix_factor(Pinv + F.T @ NmF)
-            print('==hi==')
-            print(cf[1])
-            print(np.sum(np.log(np.diag(cf[0]))))
-            ld = ldN + ldP + matrix_norm * np.sum(jnp.log(jnp.diag(cf[0])))
+            ld = ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0])))
 
-            # ld = ldN + ldP + matrix_norm * jnp.linalg.slogdet(cf[0])[1]
-            NmF = jnparray(NmF)
-            NmFty = jnparray(NmF.T @ y)
+            # NmF = jnparray(NmF)
+            # NmFty = jnparray(NmF.T @ y)
+            NmFty = NmF.T @ y
             cf = (jnparray(cf[0]), cf[1])
             ld = jnp.array(ld)
             return Ninv @ y - NmF @ jsp.linalg.cho_solve(cf, NmFty), ld
@@ -1219,22 +1216,23 @@ class ShermanMorrisonKernel_varN(VariableKernel):
         NmFltFr = jnparray(NmFl.T @ Fr)
         ld = ldN + ldP + matrix_norm * np.sum(jnp.log(jnp.diag(cf[0])))
         # ld = ldN + ldP + matrix_norm * jnp.linalg.slogdet(cf[0])[1]
-        return Ninv @ Fr - NmFl @ sp.linalg.cho_solve(cf, NmFltFr), ld
+        return Ninv @ Fr - NmFl @ jsp.linalg.cho_solve(cf, NmFltFr), ld
 
     def make_solve_2d(self):
         N_var_inv = self.N_var.make_inv()
         Pinv, ldP = self.P.inv()
-        Fl = self.F
+        Fl = jnparray(self.F)
         def solve_2d(params, Fr):
             Ninv, ldN = N_var_inv(params)
             NmFl = Ninv @ Fl
             cf = matrix_factor(Pinv + Fl.T @ NmFl)
             NmFl = jnparray(NmFl)
-            NmFltFr = jnparray(NmFl.T @ Fr)
-            cf = (jnparray(cf[0]), cf[1])
+            # NmFltFr = jnparray(NmFl.T @ Fr)
+            NmFltFr = NmFl.T @ Fr
+            # cf = (jnparray(cf[0]), cf[1])
             ld = ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0])))
             # ld = ldN + ldP + matrix_norm * jnp.linalg.slogdet(cf[0])[1]
-            ld = jnp.array(ld)
+            # ld = jnp.array(ld)
 
             return Ninv @ Fr - NmFl @ jsp.linalg.cho_solve(cf, NmFltFr), ld
         return solve_2d
