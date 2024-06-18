@@ -639,7 +639,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
 
             kernelsolve.params = T.params
         else:
-            TtNmy  = Tmat.T @ Nmy
+            TtNmy  = T.T @ Nmy
             TtNmF  = T.T @ NmF
 
             NmT, _ = self.N.solve_2d(T)
