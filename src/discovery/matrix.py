@@ -305,12 +305,12 @@ def CompoundDelay(delaylist):
 class NoiseMatrix1D_novar(ConstantKernel):
     def __init__(self, N):
         self.N = N
-        self.ld = jnp.sum(jnp.log(N))
+        self.ld = np.sum(np.log(N))
 
         self.params = []
 
     def make_kernelproduct(self, y):
-        product = -0.5 * jnp.sum(y**2 / self.N) - 0.5 * jnp.sum(jnp.log(self.N))
+        product = -0.5 * np.sum(y**2 / self.N) - 0.5 * np.sum(np.log(self.N))
 
         def kernelproduct(params={}):
             return product
@@ -756,10 +756,10 @@ class ShermanMorrisonKernel_varNP(VariableKernel):
         P_var_inv = self.P_var.make_inv()
         # N_var_inv = self.N_var.make_inv()
         N_var = self.N_var
-
+        N_solve_1d = N_var.make_solve_1d()
+        N_solve_2d = N_var.make_solve_2d()
         def kernelproduct(params):
             # Ninv, ldN = N_var_inv.inv(params)
-            N_solve_1d = N_var.make_solve_1d()
             Nmy, ldN = N_solve_1d(params, y)
             ytNmy = y @ Nmy
 
@@ -768,7 +768,6 @@ class ShermanMorrisonKernel_varNP(VariableKernel):
             # ytNmy = jnparray(ytNmy)
             # NmF, ldN = N_var.solve_2d(params, F)
 
-            N_solve_2d = N_var.make_solve_2d()
             NmF, ldN = N_solve_2d(params, F)
 
             FtNmF = F.T @ NmF
@@ -1038,7 +1037,7 @@ class ShermanMorrisonKernel_varN(VariableKernel):
         # closes on product
         def kernelproduct(params={}):
             # get N
-            NmF, ldN = N_var.solve_2d(params, self.F)
+            NmF, ldN = N_var.solve_2d(params, F)
             FtNmF = F.T @ NmF
             cf = matrix_factor(Pinv + FtNmF)
             Nmy = N_var.solve_1d(params, y)[0] - NmF @ matrix_solve(cf, NmF.T @ y)
@@ -1079,17 +1078,20 @@ class ShermanMorrisonKernel_varN(VariableKernel):
         N_var = self.N_var
         F = self.F
         Pinv, ldP = self.P.inv()
+        N_var_1d = N_var.make_solve_1d()
+        N_var_2d = N_var.make_solve_2d()
+
         def kernelterms(params={}):
-            Nmy, ldN = N_var.solve_1d(params, y)
+            Nmy, ldN = N_var_1d(params, y)
             ytNmy = y @ Nmy
             FtNmy = F.T @ Nmy
             TtNmy = T.T @ Nmy
+            NmF, _ = N_var_2d(params, F)
+            NmT, _ = N_var_2d(params, T)
 
-            NmF, _ = N_var.solve_2d(params, F)
             FtNmF = F.T @ NmF
             TtNmF = T.T @ NmF
 
-            NmT, _ = N_var.solve_2d(params, T)
             FtNmT = F.T @ NmT
             TtNmT = T.T @ NmT
             cf = matrix_factor(Pinv + FtNmF)
@@ -1124,11 +1126,13 @@ class ShermanMorrisonKernel_varN(VariableKernel):
             # cf = (jnparray(self.cf[0]), self.cf[1])
             # F, FtNmy, FtNmF = jnparray(self.F), jnparray(FtNmy), jnparray(FtNmF)
             F = jnparray(self.F)
+            N_var_1d = N_var.make_solve_1d()
+            N_var_2d = N_var.make_solve_2d()
 
             def kernelsolve(params):
-                Nmy, ldN = N_var.solve_1d(params, y)
+                Nmy, ldN = N_var_1d(params, y)
                 FtNmy = F.T @ Nmy
-                NmF, _ = N_var.solve_2d(params, F)
+                NmF, _ = N_var_2d(params, F)
                 FtNmF = F.T @ NmF
                 cf = matrix_factor(Pinv + FtNmF)
                 cf = (jnparray(cf[0]), cf[1])
@@ -1137,7 +1141,7 @@ class ShermanMorrisonKernel_varN(VariableKernel):
                 TtNmy  = Tmat.T @ Nmy
                 TtNmF  = Tmat.T @ NmF
 
-                NmT, _ = N_var.solve_2d(params, Tmat)
+                NmT, _ = N_var_2d(params, Tmat)
                 FtNmT  = F.T @ NmT
                 TtNmT  = Tmat.T @ NmT
 
@@ -1149,16 +1153,18 @@ class ShermanMorrisonKernel_varN(VariableKernel):
             kernelsolve.params = N_var.params + T.params
         else:
 
+            N_var_1d = N_var.make_solve_1d()
+            N_var_2d = N_var.make_solve_2d()
 
             # closes on TtSy and TtST
             def kernelsolve(params={}):
-                Nmy, ldN = N_var.solve_1d(params, y)
+                Nmy, ldN = N_var_1d(params, y)
                 FtNmy = F.T @ Nmy
-                NmF, _ = N_var.solve_2d(params, F)
+                NmF, _ = N_var_2d(params, F)
                 TtNmy  = T.T @ Nmy
                 TtNmF  = T.T @ NmF
 
-                NmT, _ = N_var.solve_2d(params, T)
+                NmT, _ = N_var_2d(params, T)
                 FtNmT  = self.F.T @ NmT
                 TtNmT  = T.T @ NmT
 
