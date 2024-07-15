@@ -2,6 +2,7 @@ import time
 import collections.abc
 import typing
 PyTree = typing.Any
+from textwrap import dedent
 
 import numpy as np
 import matplotlib.pyplot as pp
@@ -12,8 +13,15 @@ import jax.numpy as jnp
 import equinox as eqx
 import optax
 
-import flowjax.distributions
-
+try:
+    import flowjax.distributions
+except ModuleNotFoundError:
+    err_msg = dedent(
+        """flowjax was not found! Install discovery with flowjax (discovery[flow]) or
+        add it manually to your environment.
+        """,
+    )
+    raise ModuleNotFoundError(err_msg) from None
 
 # modified from flowjax/train/losses.py
 # obsolete, use ElboLoss factory
