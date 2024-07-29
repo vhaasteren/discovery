@@ -144,7 +144,6 @@ def CompoundGlobalGP(gplist):
                             ret)
 
                 return ret
-
             priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
             phiinvs = [gp.Phi_inv or gp.Phi.make_inv() for gp in gplist]
@@ -192,7 +191,7 @@ def VectorCompoundGP(gplist):
 
     if all(isinstance(gp, (VariableGP, GlobalVariableGP)) for gp in gplist):
         # each gp.F is a tuple of F matrices, one for each pulsar
-        # globalgp has gp.Fs instead
+        # globalgp has gp.Fs instead, which maybe is not ideal
         F = [np.hstack(Fs) for Fs in zip(*[gp.F if hasattr(gp, 'F') else gp.Fs for gp in gplist])]
 
         if all(isinstance(gp.Phi, VectorNoiseMatrix1D_var) for gp in gplist):
@@ -203,23 +202,22 @@ def VectorCompoundGP(gplist):
             multigp = VariableGP(VectorNoiseMatrix1D_var(Phi), F)
         elif all(isinstance(gp.Phi, (VectorNoiseMatrix1D_var, NoiseMatrix2D_var)) for gp in gplist):
             cvarslist = [list(gp.index) for gp in gplist]
-            pinvlist = [gp.Phi.make_inv() for gp in gplist]
+            # pinvlist = [gp.Phi.make_inv() for gp in gplist]
+            psolvelist = [gp.Phi.make_solve_1d() for gp in gplist]
 
             def priorfunc(params):
                 ret = 0.0
-
-                for cvars, pinv in zip(cvarslist, pinvlist):
-                    Pm, ldP = pinv(params)
-
-                    if Pm.shape[0] == Pm.shape[1]: # 2D prior
-                        c = jnp.concatenate([params[cvar] for cvar in cvars])
-                        ret = ret - 0.5 * c @ Pm @ c - 0.5 * ldP
-                    else: # batched prior
+                for cvars, psolve in zip(cvarslist, psolvelist):
+                    if getattr(psolve, 'vector', False):
                         c = jnp.array([params[cvar] for cvar in cvars])
-                        ret = ret - 0.5 * jnp.sum(c * Pm * c) - 0.5 * jnp.sum(ldP)
+                        Pmc, ldP = psolve(params, c)
+                        ret = ret - 0.5 * jnp.sum(c * Pmc) - 0.5 * jnp.sum(ldP)
+                    else:
+                        c = jnp.concatenate([params[cvar] for cvar in cvars])
+                        Pmc, ldP = psolve(params, c)
+                        ret = ret - 0.5 * c @ Pmc - 0.5 * ldP
 
                 return ret
-
             priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
 
             multigp = VariableGP(None, F)
@@ -474,10 +472,23 @@ class NoiseMatrix2D_var(VariableKernel):
         # closes on getN
         def inv(params):
             N = getN(params)
+
             return jnp.linalg.inv(N), jnp.linalg.slogdet(N)[1]
         inv.params = getN.params
 
         return inv
+
+    def make_solve_1d(self):
+        getN = self.getN
+
+        def solve_1d(params, y):
+            N = getN(params)
+
+            cf = matrix_factor(N)
+            return matrix_solve(cf, y), matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0])))
+        solve_1d.params = getN.params
+
+        return solve_1d
 
     def make_sample(self):
         getN = self.getN
@@ -499,6 +510,18 @@ class VectorNoiseMatrix1D_var(VariableKernel):
         self.getN = getN
         self.params = getN.params
 
+    def make_solve_1d(self):
+        getN = self.getN
+
+        def solve_1d(params, y):
+            N = getN(params)
+
+            return y / N, jnp.sum(jnp.log(N), axis=1)
+        solve_1d.params = getN.params
+        solve_1d.vector = True
+
+        return solve_1d
+
     def make_inv(self):
         getN = self.getN
         def inv(params):
@@ -510,6 +533,7 @@ class VectorNoiseMatrix1D_var(VariableKernel):
             # i1, i2 = jnp.diag_indices(m, ndim=2) # it's hard to vectorize numpy.diag!
             # return jnpzeros((n, m, m)).at[:,i1,i2].set(1.0 / N), jnp.sum(jnp.log(N), axis=1)
         inv.params = getN.params
+        inv.vector = True
 
         return inv
 
@@ -926,17 +950,20 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         ytNmy = y @ Nmy
 
         ytNmy, NmFty, FtNmF = jnparray(ytNmy), jnparray(NmFty), jnparray(FtNmF)
-        P_inv = self.P_var.make_inv()
+        # P_inv = self.P_var.make_inv()
+        P_solve = self.P_var.make_solve_1d()
 
         cvars = list(self.index.keys())
 
         def kernelproduct(params):
             c = jnp.concatenate([params[cvar] for cvar in cvars])
-            Pm, ldP = P_inv(params)
+
+            # Pm, ldP = P_inv(params)
+            Pmc, ldP = P_solve(params, c)
 
             return (-0.5 * ytNmy + c @ NmFty - 0.5 * c @ (FtNmF @ c)
-                    -0.5 * ldN - 0.5 * c @ (Pm @ c) - 0.5 * ldP)    # note Pm is 2D
-        kernelproduct.params = sorted(P_inv.params + cvars)
+                    -0.5 * ldN - 0.5 * c @ Pmc - 0.5 * ldP)    # c @ Pmc was c @ (Pm @ c)
+        kernelproduct.params = sorted(self.P_var.params + cvars)
 
         return kernelproduct
 

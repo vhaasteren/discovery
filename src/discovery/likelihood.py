@@ -467,24 +467,27 @@ class ArrayLikelihood:
     @functools.cached_property
     def clogL(self):
         if self.commongp is None:
-            def loglike(params):
-                return sum(psl.clogL(params) for psl in self.psls)
-            loglike.params = sorted(set.union(*[set(psl.clogL.params) for psl in self.psls]))
+            if self.globalgp is None:
+                def loglike(params):
+                    return sum(psl.clogL(params) for psl in self.psls)
+                loglike.params = sorted(set.union(*[set(psl.clogL.params) for psl in self.psls]))
 
-            return loglike
+                return loglike
+            else:
+                raise NotImplementedError("Currently ArrayLikelihood does not support a globalgp without a commongp")
 
         if self.globalgp is None:
-            self.commongp = matrix.VectorCompoundGP(self.commongp)
+            commongp = matrix.VectorCompoundGP(self.commongp)
         else:
             cgp = self.commongp if isinstance(self.commongp, list) else [self.commongp]
-            self.commongp = matrix.VectorCompoundGP(cgp + [self.globalgp])
+            commongp = matrix.VectorCompoundGP(cgp + [self.globalgp])
 
         Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-        self.vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, self.commongp.F, self.commongp.Phi)
-        if hasattr(self.commongp, 'prior'):
-            self.vsm.prior = self.commongp.prior
-        if hasattr(self.commongp, 'index'):
-            self.vsm.index = self.commongp.index
+        self.vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, commongp.F, commongp.Phi)
+        if hasattr(commongp, 'prior'):
+            self.vsm.prior = commongp.prior
+        if hasattr(commongp, 'index'):
+            self.vsm.index = commongp.index
 
         loglike = self.vsm.make_kernelproduct_gpcomponent(self.ys)
 
@@ -502,11 +505,11 @@ class ArrayLikelihood:
             else:
                 raise NotImplementedError("Currently ArrayLikelihood does not support a globalgp without a commongp")
 
-        self.commongp = matrix.VectorCompoundGP(self.commongp)
+        commongp = matrix.VectorCompoundGP(self.commongp)
 
         Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-        self.vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, self.commongp.F, self.commongp.Phi)
-        self.vsm.index = getattr(self.commongp, 'index', None)
+        self.vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, commongp.F, commongp.Phi)
+        self.vsm.index = getattr(commongp, 'index', None)
 
         if self.globalgp is None:
             loglike = self.vsm.make_kernelproduct(self.ys)
