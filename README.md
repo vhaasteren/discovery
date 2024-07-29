@@ -70,6 +70,11 @@ _Discovery_ uses lightweight `Pulsar` objects saved as Arrow Feather files. To c
 - `OS.shift(params, phases, [orfa])`: returns the same dictionary as `OS.os`, shifting the GW basis vectors by the phases in `phases` (an `npsr x ngw` array of floats in [0,2*pi]). `OS.shift` can be jitted and vmapped over params or phases.
 - `OS.gx2cdf(params, xs, cutoff=1e-6, limit=100, epsabs=1e-6)`: returns a vector of the GX2 OS CDF evaluated at the SNRs `xs`. The CDF is computed by considering only GPs (i.e., not white noise), using Imhof's method. The parameters `limit` and `epsabs` are passed to `scipy.integrate.quad`. If `cutoff` is a float, GX2 eigenvalues are limited to those larger than `cutoff`; if `cutoff` is an integer, only the `cutoff` largest eigenvalues are used. Currently this function cannot be jitted or vmapped.
 
+## Experimental batched interface (`likelihood.py` and `signals.py`)
+
+- `ArrayLikelihood(psls, [commongp], [globalgp])`: returns an `ArrayLikelihood` object analog to `GlobalLikelihood`, but set up especially for "batched" GPs (given as `commongp`) that implement the same process for all pulsars (i.e., red noise with the same number of components and the same power-law prior, but different amplitude and gamma parameters). Here `psls` is an iterable that may contain any number of `PulsarLikelihood` objects, `commongp` is a vectorized GP (as returned, e.g., by `makecommongp_fourier`) or a list of vectorized GPs, and `globalgp` is a `GlobalVariableGP` object as for `GlobalLikelihood`. In addition to `logL`, `ArrayLikelihood` implements a hierarchical `clogL` that takes the `commongp` and `globalgp` coefficients as additional parameters (e.g., `'B1855+09_red_noise_coefficients(60)'`, `'B1937+21_gw_coefficients(28)'`, etc.).
+- `makecommongp_fourier(psrs, prior, components, [T, fourierbasis, common, name)])`: returns a vector GP object that implements a finite GP over a vector basis for a set of pulsars. This function is analog to `makegp_fourier` but takes a list of pulsars, and is meant to be used with `ArrayLikelihood`.
+
 # Example usage
 
 The following implements a standard NANOGrav likelihood + prior for pulsar `psr`, with free parameters `['{psrname}_rednoise_gamma', '{psrname}_rednoise_log10_A', 'crn_gamma', 'crn_log10_A']`:
@@ -92,8 +97,6 @@ Then you would use `jax.jit(logl)` (and perhaps `jax.jit(jax.grad(logl)))`) and 
 The following implements a standard NANOGrav HD likelihood:
 
 ```
-import discovery as ds
-
 Tspan = ds.getspan(psrs)
 gbl = ds.GlobalLikelihood((ds.PulsarLikelihood([psr.residuals,
                                                 ds.makenoise_measurement(psr, noisedict),
@@ -104,6 +107,23 @@ gbl = ds.GlobalLikelihood((ds.PulsarLikelihood([psr.residuals,
                           ds.makegp_fourier_global(psrs, ds.powerlaw, ds.hd_orf, 14, T=Tspan, name='gw'))
 logl = gbl.logL
 logp = dp.makelogprior_uniform(logl.params)
+```
+
+Here are `ArrayLikelihood` versions, which will be especially fast on a GPU:
+
+```
+curn = ds.ArrayLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                                ds.makenoise_measurement(psr, psr.noisedict),
+                                                ds.makegp_ecorr(psr, psr.noisedict),
+                                                ds.makegp_timing(psr, svd=True, constant=1e-6)]) for psr in psrs],
+                          ds.makecommongp_fourier(psrs, ds.makepowerlaw_crn(14), 30, T=Tspan, common=['crn_log10_A', 'crn_gamma'], name='red_noise'))
+
+hd = ds.ArrayLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                              ds.makenoise_measurement(psr, psr.noisedict),
+                                              ds.makegp_ecorr(psr, psr.noisedict),
+                                              ds.makegp_timing(psr, svd=True, constant=1e-6)]) for psr in psrs],
+                         ds.makecommongp_fourier(psrs, ds.powerlaw, 30, T=Tspan, name='red_noise'),
+                         ds.makegp_fourier_global(psrs, ds.powerlaw, ds.hd_orf, 14, T=Tspan, name='gw'))
 ```
 
 To create a random realization of a model (e.g., `gbl`) as a function of its parameters:
@@ -178,3 +198,4 @@ chain = ds.read_chain('example_chain.feather')
 ```
 
 Note that the resulting Pandas tables will contain useful attributes `chain.attr['noisedict']` (a Python dict), `chain.attr['priors']` (a list of strings), and `chain.attr['runtime_info']` (the `runtime_info.txt` file rendered as a list of strings).
+
