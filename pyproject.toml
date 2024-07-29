@@ -58,6 +58,8 @@ mpi = [
     "mpi4jax",
 ]
 
+flow = ["flowjax"]
+
 [project.urls]
 # Documentation = "https://github.com/microsoft/python-package-template/tree/main#readme"
 Source = "https://github.com/vallis/discovery"
