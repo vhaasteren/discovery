@@ -177,17 +177,6 @@ class PulsarLikelihood:
             return self.N.make_sample()
 
 
-# for JAX purposes, it's best if os() returns a Python dictionary
-
-# @dataclass
-# class OS:
-#     os: float
-#     os_sigma: float
-#     snr: float
-#     rhos: np.array
-#     sigmas: np.array
-
-
 class GlobalLikelihood:
     def __init__(self, psls, globalgp=None):
         self.psls = psls
