@@ -493,11 +493,14 @@ class ArrayLikelihood:
     @functools.cached_property
     def logL(self):
         if self.commongp is None:
-            def loglike(params):
-                return sum(psl.logL(params) for psl in self.psls)
-            loglike.params = sorted(set.union(*[set(psl.logL.params) for psl in self.psls]))
+            if self.globalgp is None:
+                def loglike(params):
+                    return sum(psl.logL(params) for psl in self.psls)
+                loglike.params = sorted(set.union(*[set(psl.logL.params) for psl in self.psls]))
 
-            return loglike
+                return loglike
+            else:
+                raise NotImplementedError("Currently ArrayLikelihood does not support a globalgp without a commongp")
 
         self.commongp = matrix.VectorCompoundGP(self.commongp)
 

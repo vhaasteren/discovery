@@ -14,6 +14,9 @@ def uniform(par, a, b):
 
 
 priordict_standard = {
+    "(.*_)?efac": [0.9, 1.1],
+    "(.*_)?t2equad": [-8.5, -5],
+    "(.*_)?tnequad": [-8.5, -5],
     "(.*_)?rednoise_log10_A.*": [-20, -11],
     "(.*_)?rednoise_gamma.*": [0, 7],
     "(.*_)?red_noise_log10_A.*": [-20, -11],  # deprecated
