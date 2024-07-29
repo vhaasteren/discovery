@@ -26,11 +26,11 @@ dependencies = [
     "numpy",
     "pandas",
     "pyarrow",
-    "optax",
-    "equinox",
     "tqdm",
 ]
+
 [project.optional-dependencies]
+
 test = [
     "bandit[toml]==1.7.9",
     "black==24.4.2",
@@ -50,15 +50,21 @@ test = [
     "pytest-github-actions-annotate-failures",
     "shellcheck-py==0.10.0.1"
 ]
+
 cuda = [
     "jax[cuda12]",
 ]
+
 mpi = [
     "mpi4py",
     "mpi4jax",
 ]
 
-flow = ["flowjax"]
+flow = [
+    "optax",
+    "equinox",
+    "flowjax"
+]
 
 [project.urls]
 # Documentation = "https://github.com/microsoft/python-package-template/tree/main#readme"
