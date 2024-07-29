@@ -62,6 +62,12 @@ class Pulsar:
     def __init__(self):
         pass
 
+    def __str__(self):
+        return f'<Pulsar {self.name}: {len(self.residuals)} res, {self.Mmat.shape[1]} pars>'
+
+    def __repr__(self):
+        return str(self)
+
     @classmethod
     def read_feather(cls, filename):
         f = pyarrow.feather.read_table(filename)

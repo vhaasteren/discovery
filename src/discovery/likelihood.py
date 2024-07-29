@@ -42,6 +42,7 @@ class PulsarLikelihood:
         noise = [arg for arg in args if isinstance(arg, matrix.Kernel)]
         cgps  = [arg for arg in args if isinstance(arg, matrix.ConstantGP)]
         vgps  = [arg for arg in args if isinstance(arg, matrix.VariableGP)]
+        # pgps  = [arg for arg in args if isinstance(arg, matrix.ComponentGP)]
 
         if len(y) > 1 or len(noise) > 1:
             raise ValueError("Only one residual vector and one noise Kernel allowed.")
@@ -77,6 +78,12 @@ class PulsarLikelihood:
                     vsm.index = getattr(vgp, 'index', None)
         else:
             vsm = csm
+
+        # if pgps:
+        #     if len(pgps) > 1:
+        #         raise NotImplementedError("Cannot concatenate ComponentGPs yet.")
+        #     else:
+        #         vsm = matrix.ComponentKernel(vsm, pgps[0].F, pgps[0].Phi, pgps[0].cfunc)
 
         if len(delay) > 0:
             delay = matrix.CompoundDelay(delay)
@@ -115,6 +122,9 @@ class PulsarLikelihood:
 
     @functools.cached_property
     def conditional(self):
+        if self.delay:
+            raise NotImplementedError('No PulsarLikelihood.conditional with delays so far.')
+
         P_var_inv = self.N.P_var.Phi_inv or self.N.P_var.make_inv()
 
         ksolve = self.N.N.make_kernelsolve(self.y, self.N.F)
@@ -146,6 +156,13 @@ class PulsarLikelihood:
         return cond
 
     @functools.cached_property
+    def clogL(self):
+        if self.delay:
+            raise NotImplementedError('No PulsarLikelihood.clogL with delays so far.')
+        else:
+            return self.N.make_kernelproduct_gpcomponent(self.y)
+
+    @functools.cached_property
     def logL(self):
         if self.delay:
             return self.N.make_kernel(self.y, self.delay)
@@ -154,18 +171,10 @@ class PulsarLikelihood:
 
     @functools.cached_property
     def sample(self):
-        return self.N.make_sample()
-
-
-# for JAX purposes, it's best if os() returns a Python dictionary
-
-# @dataclass
-# class OS:
-#     os: float
-#     os_sigma: float
-#     snr: float
-#     rhos: np.array
-#     sigmas: np.array
+        if self.delay:
+            raise NotImplementedError('No PulsarLikelihood.sample with delays so far.')
+        else:
+            return self.N.make_sample()
 
 
 class GlobalLikelihood:
@@ -450,27 +459,60 @@ class GlobalLikelihood:
 
 
 class ArrayLikelihood:
-    def __init__(self, psls, commongp, globalgp=None, blockdiag='scipy'):
+    def __init__(self, psls, commongp=None, globalgp=None):
         self.psls = psls
-        self.commongp = commongp # will want to combine if given a list
-        self.globalgp = globalgp # will want to combine if given a list
-        self.blockdiag = blockdiag
+        self.commongp = commongp
+        self.globalgp = globalgp
+
+    @functools.cached_property
+    def clogL(self):
+        if self.commongp is None:
+            def loglike(params):
+                return sum(psl.clogL(params) for psl in self.psls)
+            loglike.params = sorted(set.union(*[set(psl.clogL.params) for psl in self.psls]))
+
+            return loglike
+
+        if self.globalgp is None:
+            self.commongp = matrix.VectorCompoundGP(self.commongp)
+        else:
+            cgp = self.commongp if isinstance(self.commongp, list) else [self.commongp]
+            self.commongp = matrix.VectorCompoundGP(cgp + [self.globalgp])
+
+        Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
+        self.vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, self.commongp.F, self.commongp.Phi)
+        if hasattr(self.commongp, 'prior'):
+            self.vsm.prior = self.commongp.prior
+        if hasattr(self.commongp, 'index'):
+            self.vsm.index = self.commongp.index
+
+        loglike = self.vsm.make_kernelproduct_gpcomponent(self.ys)
+
+        return loglike
 
     @functools.cached_property
     def logL(self):
-        Ns, ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-        vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, self.commongp.F, self.commongp.Phi)
+        if self.commongp is None:
+            def loglike(params):
+                return sum(psl.logL(params) for psl in self.psls)
+            loglike.params = sorted(set.union(*[set(psl.logL.params) for psl in self.psls]))
+
+            return loglike
+
+        self.commongp = matrix.VectorCompoundGP(self.commongp)
+
+        Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
+        self.vsm = matrix.VectorShermanMorrisonKernel_varP(Ns, self.commongp.F, self.commongp.Phi)
+        self.vsm.index = getattr(self.commongp, 'index', None)
 
         if self.globalgp is None:
-            loglike = vsm.make_kernelproduct(ys)
-            loglike.params = self.commongp.Phi.params
+            loglike = self.vsm.make_kernelproduct(self.ys)
         else:
             P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
-            kterms = vsm.make_kernelterms(ys, self.globalgp.Fs)
+            kterms = self.vsm.make_kernelterms(self.ys, self.globalgp.Fs)
 
             npsr = len(self.globalgp.Fs)
             ngp = self.globalgp.Fs[0].shape[1]
-            blockdiag = self.blockdiag
 
             def loglike(params):
                 terms = kterms(params)
@@ -480,22 +522,21 @@ class ArrayLikelihood:
 
                 Pinv, ldP = P_var_inv(params)
 
-                # on CPU, all schemes have comparable compilation and performance times
-                if blockdiag == 'scipy':
-                    cf = matrix.jsp.linalg.cho_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
-                elif blockdiag == 'pyloop':
-                    for i in range(npsr):
-                        Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(terms[2][i,:,:])
-                    cf = matrix.jsp.linalg.cho_factor(Pinv)
-                elif blockdiag == 'jaxloop':
-                    Pinv = jax.lax.fori_loop(0, npsr,
-                                lambda i, Pinv: jax.lax.dynamic_update_slice(Pinv,
-                                    jax.lax.dynamic_slice(Pinv, (i*ngp,i*ngp), (ngp,ngp)) +
-                                    jax.lax.squeeze(jax.lax.dynamic_slice(terms[2], (i,0,0), (1,ngp,ngp)), [0]),
-                                    (i*ngp,i*ngp)),
-                                Pinv)
-                    cf = matrix.jsp.linalg.cho_factor(Pinv)
-                return p0 + 0.5 * (FtNmy.T @ matrix.jsp.linalg.cho_solve(cf, FtNmy) - ldP - 2.0 * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
+                # alternatives to block_diag (with similar runtimes on CPU, slower on GPU)
+                # for i in range(npsr):
+                #    Pinv = Pinv.at[i*ngp:(i+1)*ngp,i*ngp:(i+1)*ngp].add(terms[2][i,:,:])
+                #    cf = matrix.jsp.linalg.cho_factor(Pinv)
+                #
+                #    Pinv = jax.lax.fori_loop(0, npsr,
+                #               lambda i, Pinv: jax.lax.dynamic_update_slice(Pinv,
+                #                   jax.lax.dynamic_slice(Pinv, (i*ngp,i*ngp), (ngp,ngp)) +
+                #                   jax.lax.squeeze(jax.lax.dynamic_slice(terms[2], (i,0,0), (1,ngp,ngp)), [0]),
+                #                   (i*ngp,i*ngp)),
+                #               Pinv)
+                #    cf = matrix.jsp.linalg.cho_factor(Pinv)
+
+                cf = matrix.matrix_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
+                return p0 + 0.5 * (FtNmy.T @ matrix.matrix_solve(cf, FtNmy) - ldP - matrix.matrix_norm * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
 
             loglike.params = sorted(kterms.params + P_var_inv.params)
 

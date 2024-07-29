@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import numpy as np
 import scipy as sp
 
@@ -5,8 +7,11 @@ import jax
 import jax.numpy
 import jax.scipy
 
-def config(backend):
-    global jnp, jsp, jnparray, intarray, jnpkey, jnpsplit, jnpnormal
+def config(**kwargs):
+    global jnp, jsp, jnparray, jnpzeros, intarray, jnpkey, jnpsplit, jnpnormal
+    global matrix_factor, matrix_solve, matrix_norm
+
+    backend = kwargs.get('backend')
 
     if backend == 'numpy':
         jnp, jsp = np, sp
@@ -29,7 +34,19 @@ def config(backend):
         jnpsplit  = jax.random.split
         jnpnormal = jax.random.normal
 
-config('jax')
+    factor = kwargs.get('factor')
+
+    if factor == 'cholesky':
+        matrix_factor = jsp.linalg.cho_factor
+        matrix_solve  = jsp.linalg.cho_solve
+        matrix_norm   = 2.0
+    elif factor == 'lu':
+        matrix_factor = jsp.linalg.lu_factor
+        matrix_solve  = jsp.linalg.lu_solve
+        matrix_norm   = 1.0
+
+config(backend='jax', factor='cholesky')
+
 
 def rngkey(seed):
     return jnpkey(seed)
@@ -59,6 +76,12 @@ class ConstantGP:
 class VariableGP:
     def __init__(self, Phi, F):
         self.Phi, self.F = Phi, F
+
+# class ComponentGP:
+#     def __init__(self, Phi, F, cfunc):
+#         self.Phi, self.F, self.cfunc = Phi, F, cfunc
+
+
 
 # note that all factories that return a GlobalVariableGP should define its `index`
 # as a dictionary of component vector names to slices within the Fs matrix, which
@@ -160,6 +183,56 @@ def CompoundGlobalGP(gplist):
     return multigp
 
 # concatenate GPs
+
+def VectorCompoundGP(gplist):
+    if gplist is None or not isinstance(gplist, Sequence):
+        return gplist
+    elif len(gplist) == 1:
+        return gplist[0]
+
+    if all(isinstance(gp, (VariableGP, GlobalVariableGP)) for gp in gplist):
+        # each gp.F is a tuple of F matrices, one for each pulsar
+        # globalgp has gp.Fs instead
+        F = [np.hstack(Fs) for Fs in zip(*[gp.F if hasattr(gp, 'F') else gp.Fs for gp in gplist])]
+
+        if all(isinstance(gp.Phi, VectorNoiseMatrix1D_var) for gp in gplist):
+            def Phi(params):
+                return jnp.hstack([gp.Phi.getN(params) for gp in gplist])
+            Phi.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+
+            multigp = VariableGP(VectorNoiseMatrix1D_var(Phi), F)
+        elif all(isinstance(gp.Phi, (VectorNoiseMatrix1D_var, NoiseMatrix2D_var)) for gp in gplist):
+            cvarslist = [list(gp.index) for gp in gplist]
+            pinvlist = [gp.Phi.make_inv() for gp in gplist]
+
+            def priorfunc(params):
+                ret = 0.0
+
+                for cvars, pinv in zip(cvarslist, pinvlist):
+                    Pm, ldP = pinv(params)
+
+                    if Pm.shape[0] == Pm.shape[1]: # 2D prior
+                        c = jnp.concatenate([params[cvar] for cvar in cvars])
+                        ret = ret - 0.5 * c @ Pm @ c - 0.5 * ldP
+                    else: # batched prior
+                        c = jnp.array([params[cvar] for cvar in cvars])
+                        ret = ret - 0.5 * jnp.sum(c * Pm * c) - 0.5 * jnp.sum(ldP)
+
+                return ret
+
+            priorfunc.params = sorted(set.union(*[set(gp.Phi.params) for gp in gplist]))
+
+            multigp = VariableGP(None, F)
+            multigp.prior = priorfunc
+        else:
+            raise TypeError('VectorCompoundGP works only with VectorNoiseMatrix1D_var so far.')
+    else:
+        raise TypeError('VectorCompoundGP works only with VariableGPs so far.')
+
+    multigp.index = [dict(g) for g in zip(*[gp.index.items() for gp in gplist])]
+
+    return multigp
+
 def CompoundGP(gplist):
     if len(gplist) == 1:
         return gplist[0]
@@ -237,7 +310,7 @@ class NoiseMatrix1D_novar(ConstantKernel):
         self.params = []
 
     def make_kernelproduct(self, y):
-        product = -0.5 * jnp.sum(y**2 / self.N) - 0.5 * jnp.sum(jnp.log(self.N))
+        product = -0.5 * np.sum(y**2 / self.N) - 0.5 * np.sum(np.log(self.N))
 
         def kernelproduct(params={}):
             return product
@@ -246,7 +319,7 @@ class NoiseMatrix1D_novar(ConstantKernel):
         return kernelproduct
 
     def inv(self):
-        return np.diag(1.0 / self.N), self.ld
+        return jnp.diag(1.0 / self.N), self.ld
 
     def make_sqrt(self):
         sN = jnp.sqrt(self.N)
@@ -344,6 +417,16 @@ class NoiseMatrix1D_var(VariableKernel):
 
         return sample
 
+    def solve_2d(self, params, F):
+        inv = self.make_inv()
+        myinv, ld = inv(params)
+        return myinv @ F, ld
+
+    def solve_1d(self, params, y):
+        inv = self.make_inv()
+        myinv, ld = inv(params)
+        return myinv @ y, ld
+
 
 class NoiseMatrix2D_novar(ConstantKernel):
     def __init__(self, N):
@@ -407,6 +490,14 @@ class VectorNoiseMatrix1D_var(VariableKernel):
         return inv
 
 
+# now obsolete
+# def ComponentKernel(N, F, P, c):
+#     if isinstance(N, ConstantKernel) and isinstance(P, VariableKernel):
+#         return ComponentKernel_varP(N, F, P, c)
+#     else:
+#         raise TypeError("N must be a ConstantKernel and P a VariableKernel")
+
+
 def ShermanMorrisonKernel(N, F, P):
     if isinstance(N, ConstantKernel) and isinstance(P, ConstantKernel):
         return ShermanMorrisonKernel_novar(N, F, P)
@@ -415,14 +506,44 @@ def ShermanMorrisonKernel(N, F, P):
             return ShermanMorrisonKernel_varP(N, F, P)
         else:
             return ShermanMorrisonKernel_varFP(N, F, P)
+
+    elif isinstance(N, VariableKernel) and isinstance(P, ConstantKernel):
+        return ShermanMorrisonKernel_varN(N, F, P)
+    elif isinstance(N, VariableKernel) and isinstance(P, VariableKernel):
+        return ShermanMorrisonKernel_varNP(N, F, P)
     else:
-        raise TypeError("N must be a ConstantMatrix and P a VariableMatrix")
+        raise TypeError("N must be a ConstantKernel and P a VariableKernel")
 
-# the first argument of ShermanMorrisonKernel will be
 
-# VariableKernel should have methods
-# - make_kernelproduct
-# - make_kernelterms
+# this is obsolete since the functionality was moved to logL_gpcomponent
+# class ComponentKernel_varP:
+#     def __init__(self, N, F, P_var, c):
+#         self.N, self.F, self.P_var, self.c = N, F, P_var, c
+
+#     def make_kernelproduct(self, y):
+#         # -0.5 yt Nm y + yt Nm F a - 0.5 ct Ft Nm F c - 0.5 log |2 pi N| - 0.5 cT Pm c - 0.5 log |2 pi P|
+
+#         NmF, ldN = self.N.solve_2d(self.F)
+#         FtNmF = self.F.T @ NmF
+#         NmFty = NmF.T @ y
+
+#         Nmy, ldN = self.N.solve_1d(y)
+#         ytNmy = y @ Nmy
+
+#         ytNmy, NmFty, FtNmF = jnparray(ytNmy), jnparray(NmFty), jnparray(FtNmF)
+#         P_inv = self.P_var.make_inv()
+#         cfunc = self.c
+
+#         def kernelproduct(params):
+#             c = cfunc(params)
+#             Pm, ldP = P_inv(params) # note Pm is 2D
+
+#             return (-0.5 * ytNmy + c @ NmFty - 0.5 * c @ (FtNmF @ c)
+#                     -0.5 * ldN - 0.5 * c @ (Pm @ c) - 0.5 * ldP)    # assuming Pm is 1D
+#         kernelproduct.params = sorted(P_inv.params + cfunc.params)
+
+#         return kernelproduct
+
 
 class ShermanMorrisonKernel_novar(ConstantKernel):
     def __init__(self, N, F, P):
@@ -433,8 +554,8 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         self.NmF, ldN = N.solve_2d(F)
         FtNmF = F.T @ self.NmF
         Pinv, ldP = P.inv()
-        self.cf = sp.linalg.cho_factor(Pinv + FtNmF)
-        self.ld = ldN + ldP + 2.0 * np.sum(np.log(np.diag(self.cf[0])))
+        self.cf = matrix_factor(Pinv + FtNmF)
+        self.ld = ldN + ldP + matrix_norm * jnp.sum(jnp.log(np.diag(self.cf[0])))
 
         self.params = []
 
@@ -454,7 +575,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         return sample
 
     def make_kernelproduct(self, y):
-        Nmy = self.N.solve_1d(y)[0] - self.NmF @ jsp.linalg.cho_solve(self.cf, self.NmF.T @ y)
+        Nmy = self.N.solve_1d(y)[0] - self.NmF @ matrix_solve(self.cf, self.NmF.T @ y)
         product = -0.5 * y @ Nmy - 0.5 * self.ld
 
         # closes on product
@@ -533,7 +654,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
 
             kernelsolve.params = T.params
         else:
-            TtNmy  = Tmat.T @ Nmy
+            TtNmy  = T.T @ Nmy
             TtNmF  = T.T @ NmF
 
             NmT, _ = self.N.solve_2d(T)
@@ -580,6 +701,8 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
 
         return solve_2d
 
+
+
 # this is the terminal class for a standard model 2A; the only parameters come in through P_var
 # it defines make_kernelproduct() which is effectively the model 2A likelihood for fixed y
 #        and make_kernelterms() which is used in the multi-pulsar likelihood
@@ -614,12 +737,47 @@ class ShermanMorrisonKernel_varFP(VariableKernel):
             NmFty = NmF.T @ y
 
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
-            ytXy = NmFty.T @ jsp.linalg.cho_solve(cf, NmFty)
+            cf = matrix_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
 
         kernelproduct.params = F_var.params + P_var_inv.params
+
+        return kernelproduct
+
+class ShermanMorrisonKernel_varNP(VariableKernel):
+    def __init__(self, N_var, F, P_var):
+        self.N_var, self.F, self.P_var = N_var, F, P_var
+
+    def make_kernelproduct(self, y):
+
+        F = self.F
+        P_var_inv = self.P_var.make_inv()
+        # N_var_inv = self.N_var.make_inv()
+        N_var = self.N_var
+        N_solve_1d = N_var.make_solve_1d()
+        N_solve_2d = N_var.make_solve_2d()
+        def kernelproduct(params):
+            # Ninv, ldN = N_var_inv.inv(params)
+            Nmy, ldN = N_solve_1d(params, y)
+            ytNmy = y @ Nmy
+
+
+
+            # ytNmy = jnparray(ytNmy)
+            # NmF, ldN = N_var.solve_2d(params, F)
+
+            NmF, ldN = N_solve_2d(params, F)
+
+            FtNmF = F.T @ NmF
+            NmFty = NmF.T @ y
+
+            Pinv, ldP = P_var_inv(params)
+            cf = matrix_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ matrix_solve(cf, NmFty)
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+        kernelproduct.params = N_var.params + P_var_inv.params
 
         return kernelproduct
 
@@ -694,10 +852,10 @@ class ShermanMorrisonKernel_varP(VariableKernel):
             NmFty = NmF.T @ yp
 
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
-            ytXy = NmFty.T @ jsp.linalg.cho_solve(cf, NmFty)
+            cf = matrix_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
 
         kernel.params = delay.params + P_var_inv.params
 
@@ -733,10 +891,10 @@ class ShermanMorrisonKernel_varP(VariableKernel):
 
         def kernelsolve(params):
             Pinv, _ = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
+            cf = matrix_factor(Pinv + FtNmF)
 
-            TtSy = TtNmy - TtNmF @ jsp.linalg.cho_solve(cf, FtNmy)
-            TtST = TtNmT - TtNmF @ jsp.linalg.cho_solve(cf, FtNmT)
+            TtSy = TtNmy - TtNmF @ matrix_solve(cf, FtNmy)
+            TtST = TtNmT - TtNmF @ matrix_solve(cf, FtNmT)
 
             return TtSy, TtST
 
@@ -758,12 +916,37 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         # closes on P_var_inv, FtNmF, NmFty, ytNmy, ldN
         def kernelproduct(params):
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
-            ytXy = NmFty.T @ jsp.linalg.cho_solve(cf, NmFty)
+            cf = matrix_factor(Pinv + FtNmF)
+            ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
 
         kernelproduct.params = P_var_inv.params
+
+        return kernelproduct
+
+    def make_kernelproduct_gpcomponent(self, y):
+        # -0.5 yt Nm y + yt Nm F a - 0.5 ct Ft Nm F c - 0.5 log |2 pi N| - 0.5 cT Pm c - 0.5 log |2 pi P|
+
+        NmF, ldN = self.N.solve_2d(self.F)
+        FtNmF = self.F.T @ NmF
+        NmFty = NmF.T @ y
+
+        Nmy, ldN = self.N.solve_1d(y)
+        ytNmy = y @ Nmy
+
+        ytNmy, NmFty, FtNmF = jnparray(ytNmy), jnparray(NmFty), jnparray(FtNmF)
+        P_inv = self.P_var.make_inv()
+
+        cvars = list(self.index.keys())
+
+        def kernelproduct(params):
+            c = jnp.concatenate([params[cvar] for cvar in cvars])
+            Pm, ldP = P_inv(params)
+
+            return (-0.5 * ytNmy + c @ NmFty - 0.5 * c @ (FtNmF @ c)
+                    -0.5 * ldN - 0.5 * c @ (Pm @ c) - 0.5 * ldP)    # note Pm is 2D
+        kernelproduct.params = sorted(P_inv.params + cvars)
 
         return kernelproduct
 
@@ -801,12 +984,12 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         # closes on P_var_inv, FtNmF, FtNmy, FtMmT, ytNmy, TtNmy, TtNmT, TtNmF
         def kernelterms(params):
             Pinv, ldP = P_var_inv(params)
-            cf = jsp.linalg.cho_factor(Pinv + FtNmF)
+            cf = matrix_factor(Pinv + FtNmF)
 
-            sol = jsp.linalg.cho_solve(cf, FtNmy)
-            sol2 = jsp.linalg.cho_solve(cf, FtNmT)
+            sol = matrix_solve(cf, FtNmy)
+            sol2 = matrix_solve(cf, FtNmT)
 
-            a = -0.5 * (ytNmy - FtNmy.T @ sol) - 0.5 * (ldN + ldP + 2.0 * jnp.sum(jnp.log(jnp.diag(cf[0]))))
+            a = -0.5 * (ytNmy - FtNmy.T @ sol) - 0.5 * (ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0]))))
             b = TtNmy - TtNmF @ sol
             c = TtNmT - TtNmF @ sol2
 
@@ -815,6 +998,251 @@ class ShermanMorrisonKernel_varP(VariableKernel):
         kernelterms.params = self.P_var.params
 
         return kernelterms
+
+
+class ShermanMorrisonKernel_varN(VariableKernel):
+    def __init__(self, N_var, F, P):
+        # (N + F P F^T)^-1 = N^-1 - N^-1 F (P^-1 + F^T N^-1 F)^-1 F^T N^-1
+        # |N + F P F^T| = |N| |P| |P^-1 + F^T N^-1 F|
+
+        self.N_var, self.F, self.P = N_var, F, P
+        # self.NmF, ldN = N_var.solve_2d(F)
+        # FtNmF = F.T @ self.NmF
+        Pinv, ldP = P.inv()
+        # self.cf = matrix_factor(Pinv + FtNmF)
+        # self.ld = ldN + ldP + matrix_norm * np.sum(np.log(np.diag(self.cf[0])))
+
+        self.params = self.N_var.params
+
+    def make_sample(self, params):
+        P_sample = self.P.make_sample()
+        F = jnparray(self.F)
+        N_sample = self.N_var.make_sample()
+        def sample(key):
+            # N = N_var(params)
+            key, n = N_sample(key, params)
+            key, c = P_sample(key)
+
+            return key, n + jnp.dot(F, c)
+
+        sample.params = N_sample.params
+
+        return sample
+
+    def make_kernelproduct(self, y):
+
+        Pinv, ldP = self.P.inv()
+        F = self.F
+        N_var = self.N_var
+        # closes on product
+        def kernelproduct(params={}):
+            # get N
+            NmF, ldN = N_var.solve_2d(params, F)
+            FtNmF = F.T @ NmF
+            cf = matrix_factor(Pinv + FtNmF)
+            Nmy = N_var.solve_1d(params, y)[0] - NmF @ matrix_solve(cf, NmF.T @ y)
+            ld = ldN + ldP + matrix_norm * np.sum(jnp.log(jnp.diag(cf[0])))
+            product = -0.5 * y @ Nmy - 0.5 * ld
+            return product
+        kernelproduct.params = N_var.params
+
+        return kernelproduct
+
+    def make_kernelterms(self, y, T):
+        # Sigma = (N + F P Ft)
+        # Sigma^-1 = Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm
+        #
+        # yt Sigma^-1 y = yt Nm y - (yt Nm F) C^-1 (Ft Nm y)
+        # Tt Sigma^-1 y = Tt Nm y - Tt Nm F C^-1 (Ft Nm y)
+        # Tt Sigma^-1 T = Tt Nm T - (Tt Nm F) C^-1 (Ft Nm T)
+
+        # Nmy, ldN = self.N.solve_1d(y)
+        # ytNmy = y @ Nmy
+        # FtNmy = self.F.T @ Nmy
+        # TtNmy = T.T @ Nmy
+
+        # NmF, _ = self.N.solve_2d(self.F)
+        # FtNmF = self.F.T @ NmF
+        # TtNmF = T.T @ NmF
+
+        # NmT, _ = self.N.solve_2d(T)
+        # FtNmT = self.F.T @ NmT
+        # TtNmT = T.T @ NmT
+
+        # sol = sp.linalg.cho_solve(self.cf, FtNmy)
+        # sol2 = sp.linalg.cho_solve(self.cf, FtNmT)
+
+        # a = -0.5 * (ytNmy - FtNmy.T @ sol) - 0.5 * self.ld
+        # b = jnparray(TtNmy - TtNmF @ sol)
+        # c = jnparray(TtNmT - TtNmF @ sol2)
+        N_var = self.N_var
+        F = self.F
+        Pinv, ldP = self.P.inv()
+        N_var_1d = N_var.make_solve_1d()
+        N_var_2d = N_var.make_solve_2d()
+
+        def kernelterms(params={}):
+            Nmy, ldN = N_var_1d(params, y)
+            ytNmy = y @ Nmy
+            FtNmy = F.T @ Nmy
+            TtNmy = T.T @ Nmy
+            NmF, _ = N_var_2d(params, F)
+            NmT, _ = N_var_2d(params, T)
+
+            FtNmF = F.T @ NmF
+            TtNmF = T.T @ NmF
+
+            FtNmT = F.T @ NmT
+            TtNmT = T.T @ NmT
+            cf = matrix_factor(Pinv + FtNmF)
+            cf = (jnparray(cf[0]), cf[1])
+            sol = sp.linalg.cho_solve(cf, FtNmy)
+            sol2 = sp.linalg.cho_solve(cf, FtNmT)
+            ld = ldN + ldP + matrix_norm * np.sum(jnp.log(jnp.diag(cf[0])))
+            a = -0.5 * (ytNmy - FtNmy.T @ sol) - 0.5 * ld
+            b = jnparray(TtNmy - TtNmF @ sol)
+            c = jnparray(TtNmT - TtNmF @ sol2)
+            return a, b, c
+        kernelterms.params = N_var.params
+
+        return kernelterms
+
+    def make_kernelsolve(self, y, T):
+        # Tt Sigma y = Tt (N + F P Ft) y
+        # Tt Sigma^-1 y = Tt (Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm) y
+        #               = Tt Nm y - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm y
+        # Tt Sigma^-1 T = Tt Nm T - Tt Nm F (P^-1 + Ft Nm F)^-1 Ft Nm T
+        N_var = self.N_var
+        F = self.F
+        # Nmy, _ = self.N.solve_1d(y)
+        # FtNmy  = self.F.T @ Nmy
+
+        # NmF, _ = self.N.solve_2d(self.F)
+        # FtNmF = self.F.T @ NmF
+        Pinv, ldP = self.P.inv()
+        if callable(T):
+            # Nmy, NmF = jnparray(Nmy), jnparray(NmF)
+            # N_solve_2d = self.N.make_solve_2d()
+            # cf = (jnparray(self.cf[0]), self.cf[1])
+            # F, FtNmy, FtNmF = jnparray(self.F), jnparray(FtNmy), jnparray(FtNmF)
+            F = jnparray(self.F)
+            N_var_1d = N_var.make_solve_1d()
+            N_var_2d = N_var.make_solve_2d()
+
+            def kernelsolve(params):
+                Nmy, ldN = N_var_1d(params, y)
+                FtNmy = F.T @ Nmy
+                NmF, _ = N_var_2d(params, F)
+                FtNmF = F.T @ NmF
+                cf = matrix_factor(Pinv + FtNmF)
+                cf = (jnparray(cf[0]), cf[1])
+                Tmat = T(params)
+
+                TtNmy  = Tmat.T @ Nmy
+                TtNmF  = Tmat.T @ NmF
+
+                NmT, _ = N_var_2d(params, Tmat)
+                FtNmT  = F.T @ NmT
+                TtNmT  = Tmat.T @ NmT
+
+                TtSy = TtNmy - TtNmF @ jsp.linalg.cho_solve(cf, FtNmy)
+                TtST = TtNmT - TtNmF @ jsp.linalg.cho_solve(cf, FtNmT)
+
+                return TtSy, TtST
+
+            kernelsolve.params = N_var.params + T.params
+        else:
+
+            N_var_1d = N_var.make_solve_1d()
+            N_var_2d = N_var.make_solve_2d()
+
+            # closes on TtSy and TtST
+            def kernelsolve(params={}):
+                Nmy, ldN = N_var_1d(params, y)
+                FtNmy = F.T @ Nmy
+                NmF, _ = N_var_2d(params, F)
+                TtNmy  = T.T @ Nmy
+                TtNmF  = T.T @ NmF
+
+                NmT, _ = N_var_2d(params, T)
+                FtNmT  = self.F.T @ NmT
+                TtNmT  = T.T @ NmT
+
+                TtSy = jnparray(TtNmy - TtNmF @ sp.linalg.cho_solve(self.cf, FtNmy))
+                TtST = jnparray(TtNmT - TtNmF @ sp.linalg.cho_solve(self.cf, FtNmT))
+                return TtSy, TtST
+
+            kernelsolve.params = N_var.params
+
+        return kernelsolve
+
+    def solve_1d(self, params, y):
+        N_var_inv = self.N_var.make_inv()
+        Ninv, ldN = N_var_inv(params)
+        NmF = Ninv @ self.F
+        NmF = NmF
+        NmFty = NmF.T @ y
+        Pinv, ldP = self.P.inv()
+        cf = matrix_factor(Pinv + self.F.T @ NmF)
+        # cf = (jnparray(cf[0]), cf[1])
+        ld = ldN + ldP + matrix_norm * np.sum(jnp.log(jnp.diag(cf[0])))
+        return Ninv @ y - NmF @ sp.linalg.cho_solve(cf, NmFty), ld
+
+    def make_solve_1d(self):
+
+
+        N_var_inv = self.N_var.make_inv()
+        F = jnparray(self.F)
+        P = self.P
+        # closes on N_solve_1d, NmF, cf, ld
+        def solve_1d(params, y):
+            Ninv, ldN = N_var_inv(params)
+            NmF = Ninv @ F
+            Pinv, ldP = P.inv()
+            cf = matrix_factor(Pinv + F.T @ NmF)
+            ld = ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0])))
+
+            # NmF = jnparray(NmF)
+            # NmFty = jnparray(NmF.T @ y)
+            NmFty = NmF.T @ y
+            cf = (jnparray(cf[0]), cf[1])
+            ld = jnp.array(ld)
+            return Ninv @ y - NmF @ jsp.linalg.cho_solve(cf, NmFty), ld
+
+        return solve_1d
+
+    def solve_2d(self, params, Fr):
+        N_var_inv = self.N_var.make_inv()
+        Ninv, ldN = N_var_inv(params)
+        NmFl = Ninv @ self.F
+        NmFl = jnparray(NmFl)
+        Pinv, ldP = self.P.inv()
+        cf = matrix_factor(Pinv + self.F.T @ NmFl)
+        cf = (jnparray(cf[0]), cf[1])
+        NmFltFr = jnparray(NmFl.T @ Fr)
+        ld = ldN + ldP + matrix_norm * np.sum(jnp.log(jnp.diag(cf[0])))
+        # ld = ldN + ldP + matrix_norm * jnp.linalg.slogdet(cf[0])[1]
+        return Ninv @ Fr - NmFl @ jsp.linalg.cho_solve(cf, NmFltFr), ld
+
+    def make_solve_2d(self):
+        N_var_inv = self.N_var.make_inv()
+        Pinv, ldP = self.P.inv()
+        Fl = jnparray(self.F)
+        def solve_2d(params, Fr):
+            Ninv, ldN = N_var_inv(params)
+            NmFl = Ninv @ Fl
+            cf = matrix_factor(Pinv + Fl.T @ NmFl)
+            NmFl = jnparray(NmFl)
+            # NmFltFr = jnparray(NmFl.T @ Fr)
+            NmFltFr = NmFl.T @ Fr
+            # cf = (jnparray(cf[0]), cf[1])
+            ld = ldN + ldP + matrix_norm * jnp.sum(jnp.log(jnp.diag(cf[0])))
+            # ld = ldN + ldP + matrix_norm * jnp.linalg.slogdet(cf[0])[1]
+            # ld = jnp.array(ld)
+
+            return Ninv @ Fr - NmFl @ jsp.linalg.cho_solve(cf, NmFltFr), ld
+        return solve_2d
+
 
 class VectorShermanMorrisonKernel_varP(VariableKernel):
     def __init__(self, Ns, Fs, P_var):
@@ -836,16 +1264,55 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
             Pinv, ldP = P_var_inv(params)            # Pinv.shape = FtNmF.shape = [npsr, ngp, ngp]
 
             i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
-            cf = jsp.linalg.cho_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
 
             # cf = jsp.linalg.cho_factor(Pinv + FtNmF)
 
-            ytXy = jnp.sum(NmFty * jsp.linalg.cho_solve(cf, NmFty)) # was NmFty.T @ jsp.linalg.cho_solve(...)
+            ytXy = jnp.sum(NmFty * matrix_solve(cf, NmFty)) # was NmFty.T @ jsp.linalg.cho_solve(...)
 
             i1, i2 = jnp.diag_indices(cf[0].shape[1], ndim=2) # it's hard to vectorize numpy.diag!
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + jnp.sum(ldP) + 2.0 * jnp.sum(jnp.log(cf[0][:,i1,i2])))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + jnp.sum(ldP) + matrix_norm * jnp.sum(jnp.log(cf[0][:,i1,i2])))
 
         kernelproduct.params = P_var_inv.params
+
+        return kernelproduct
+
+    def make_kernelproduct_gpcomponent(self, ys):
+        # -0.5 yt Nm y + yt Nm F a - 0.5 ct Ft Nm F c - 0.5 log |2 pi N| - 0.5 cT Pm c - 0.5 log |2 pi P|
+
+        NmFs, ldNs = zip(*[N.solve_2d(F) for N, F in zip(self.Ns, self.Fs)])
+        FtNmFs = [F.T @ NmF for F, NmF in zip(self.Fs, NmFs)]
+
+        Nmys, _  = zip(*[N.solve_1d(y) for N, y in zip(self.Ns, ys)])
+        ytNmys = [y @ Nmy for y, Nmy in zip(ys, Nmys)]
+        NmFtys = [NmF.T @ y for NmF, y in zip(NmFs, ys)]
+
+        FtNmF, NmFty = jnparray(FtNmFs), jnparray(NmFtys)
+        ytNmy, ldN = float(sum(ytNmys)), float(sum(ldNs))
+        cvarsall = self.index if isinstance(self.index, list) else [self.index]
+
+        if hasattr(self, 'prior'):
+            P_var_prior = self.prior
+
+            def kernelproduct(params):
+                c = jnp.array([jnp.concatenate([params[cvar] for cvar in cvars]) for cvars in cvarsall])
+                logpr = P_var_prior(params)
+
+                return (-0.5 * ytNmy + jnp.sum(c * NmFty) - 0.5 * jnp.einsum('ij,ijk,ik', c, FtNmF, c)
+                        -0.5 * ldN - logpr) # note Pm is 1D
+
+            kernelproduct.params = sorted(P_var_prior.params + sum([list(cvars) for cvars in cvarsall], []))
+        else:
+            P_var_inv = self.P_var.make_inv()
+
+            def kernelproduct(params):
+                c = jnp.array([jnp.concatenate([params[cvar] for cvar in cvars]) for cvars in cvarsall])
+                Pm, ldP = P_var_inv(params)
+
+                return (-0.5 * ytNmy + jnp.sum(c * NmFty) - 0.5 * jnp.einsum('ij,ijk,ik', c, FtNmF, c)
+                        -0.5 * ldN - 0.5 * jnp.sum(c * Pm * c) - 0.5 * jnp.sum(ldP)) # note Pm is 1D
+
+            kernelproduct.params = sorted(P_var_inv.params + sum([list(cvars) for cvars in cvarsall], []))
 
         return kernelproduct
 
@@ -879,13 +1346,13 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
             Pinv, ldP = P_var_inv(params)
 
             i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
-            cf = jsp.linalg.cho_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
 
-            sol = jsp.linalg.cho_solve(cf, FtNmy)
-            sol2 = jsp.linalg.cho_solve(cf, FtNmT)
+            sol = matrix_solve(cf, FtNmy)
+            sol2 = matrix_solve(cf, FtNmT)
 
             i1, i2 = jnp.diag_indices(cf[0].shape[1], ndim=2)
-            a = -0.5 * (ytNmy - jnp.sum(FtNmy * sol)) - 0.5 * (ldN + jnp.sum(ldP) + 2.0 * jnp.sum(jnp.log(cf[0][:,i1,i2])))
+            a = -0.5 * (ytNmy - jnp.sum(FtNmy * sol)) - 0.5 * (ldN + jnp.sum(ldP) + matrix_norm * jnp.sum(jnp.log(cf[0][:,i1,i2])))
             b = TtNmy - jnp.sum(TtNmF * sol[:, jnp.newaxis, :], axis=2)
             c = TtNmT - TtNmF @ sol2 # fine as is!
 
