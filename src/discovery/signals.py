@@ -36,30 +36,42 @@ def makenoise_measurement_simple(psr, noisedict={}):
         return matrix.NoiseMatrix1D_var(getnoise)
 
 # nanograv backends
-def makenoise_measurement(psr, noisedict={}, scale=1.0):
+def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False):
     backends = sorted(set(psr.backend_flags))
 
     efacs = [f'{psr.name}_{backend}_efac' for backend in backends]
-    log10_t2equads = [f'{psr.name}_{backend}_log10_t2equad' for backend in backends]
-    params = efacs + log10_t2equads
+    if tnequad:
+        log10_tnequads = [f'{psr.name}_{backend}_log10_tnequad' for backend in backends]
+        params = efacs + log10_tnequads
+    else:
+        log10_t2equads = [f'{psr.name}_{backend}_log10_t2equad' for backend in backends]
+        params = efacs + log10_t2equads
 
     masks = [(psr.backend_flags == backend) for backend in backends]
     logscale = np.log10(scale)
 
     if all(par in noisedict for par in params):
-        noise = sum(mask * noisedict[efac]**2 * ((scale * psr.toaerrs)**2 + 10.0**(2 * (logscale + noisedict[log10_t2equad])))
-                    for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
+        if tnequad:
+            noise = sum(mask * (noisedict[efac]**2 * (scale * psr.toaerrs)**2 + 10.0**(2 * (logscale + noisedict[log10_tnequad])))
+                        for mask, efac, log10_tnequad in zip(masks, efacs, log10_tnequads))
+        else:
+            noise = sum(mask * noisedict[efac]**2 * ((scale * psr.toaerrs)**2 + 10.0**(2 * (logscale + noisedict[log10_t2equad])))
+                        for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
 
         return matrix.NoiseMatrix1D_novar(noise)
     else:
         toaerrs, masks = matrix.jnparray(scale * psr.toaerrs), [matrix.jnparray(mask) for mask in masks]
-        def getnoise(params):
-            return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * (logscale + params[log10_t2equad])))
-                    for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
+        if tnequad:
+            def getnoise(params):
+                return sum(mask * (params[efac]**2 * toaerrs**2 + 10.0**(2 * (logscale + params[log10_tnequad])))
+                        for mask, efac, log10_tnequad in zip(masks, efacs, log10_tnequads))
+        else:
+            def getnoise(params):
+                return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * (logscale + params[log10_t2equad])))
+                        for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
         getnoise.params = params
 
         return matrix.NoiseMatrix1D_var(getnoise)
-
 
 # ECORR quantization
 #
