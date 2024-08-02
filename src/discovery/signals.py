@@ -226,8 +226,12 @@ def dmfourierbasis_alpha(psr, components, T=None, fref=1400.0):
 def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, common=[], name='fourierGP'):
     argspec = inspect.getfullargspec(prior)
     argmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
-              (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
+              (f'({components[arg] if isinstance(components, dict) else components})' if argspec.annotations.get(arg) == typing.Sequence else '')
               for arg in argspec.args if arg not in ['f', 'df']]
+
+    # we'll create frequency bases using the longest vector parameter (e.g., for makefreespectrum_crn)
+    if isinstance(components, dict):
+        components = max(components.values())
 
     f, df, fmat = fourierbasis(psr, components, T)
 
@@ -263,8 +267,13 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
         argmap = [arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else
                   f'{name}_{arg}({len(psrs)})' for arg in argspec.args if arg not in ['f', 'df']]
     else:
-        argmaps = [[arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}' for psr in psrs]
+        argmaps = [[(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
+                    (f'({components[arg] if isinstance(components, dict) else components})' if argspec.annotations.get(arg) == typing.Sequence else '') for psr in psrs]
                    for arg in argspec.args if arg not in ['f', 'df']]
+
+    # we'll create frequency bases using the longest vector parameter (e.g., for makefreespectrum_crn)
+    if isinstance(components, dict):
+        components = max(components.values())
 
     fs, dfs, fmats = zip(*[fourierbasis(psr, components, T) for psr in psrs])
     f, df = fs[0], dfs[0]
@@ -511,6 +520,20 @@ def makepowerlaw_crn(components):
             return phi
 
     return powerlaw_crn
+
+def makefreespectrum_crn(components):
+    if matrix.jnp == jnp:
+        def freespectrum_crn(f, df, log10_rho: typing.Sequence, crn_log10_rho: typing.Sequence):
+            phi = jnp.repeat(10.0**(2.0 * log10_rho), 2)
+            phi = phi.at[:2*components].add(jnp.repeat(10.0**(2.0 * crn_log10_rho), 2))
+            return phi
+    elif matrix.jnp == np:
+        def freespectrum_crn(f, df, log10_rho: typing.Sequence, crn_log10_rho: typing.Sequence):
+            phi = jnp.repeat(10.0**(2.0 * log10_rho), 2)
+            phi[:2*components] += jnp.repeat(10.0**(2.0 * crn_log10_rho), 2)
+            return phi
+
+    return freespectrum_crn
 
 # ORFs: OK as numpy functions
 
