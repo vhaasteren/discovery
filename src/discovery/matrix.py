@@ -582,7 +582,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
 
         Pinv, ldP = P.inv()
         self.cf = sp.linalg.cho_factor(Pinv + FtNmF)
-        self.ld = ldN + ldP + jnp.logdet(np.diag(self.cf[0]))
+        self.ld = ldN + ldP + np.logdet(np.diag(self.cf[0]))
 
         self.params = []
 
@@ -943,7 +943,7 @@ class ShermanMorrisonKernel_varP(VariableKernel):
             cf = matrix_factor(Pinv + FtNmF)
             ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
-            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.logdet(cf[0]))
+            return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.logdet(jnp.diag(cf[0])))
 
         kernelproduct.params = P_var_inv.params
 
