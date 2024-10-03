@@ -31,6 +31,8 @@ priordict_standard = {
     "(.*_)?dmgp_alpha": [1, 3],
     "crn_log10_rho": [-9, -4],
     "gw_(.*_)?log10_rho": [-9, -4],
+    "(.*_)?red_noise_log10_rho\(([0-9]*)\)": [-9, -4],
+    "(.*_)?red_noise_crn_log10_rho\(([0-9]*)\)": [-9, -4]
 }
 
 

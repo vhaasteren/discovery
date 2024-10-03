@@ -1,3 +1,4 @@
+import os
 import re
 import inspect
 import typing
@@ -193,6 +194,33 @@ def getspan(psrs):
     else:
         return psrs.toas.max() - psrs.toas.min()
 
+
+def fourierxibasis(psr, components, T=None, lowcomponents=10):
+    if T is None:
+        T = getspan(psr)
+
+    # low-frequency basis, optimized for gamma = 13/3
+    flow  = np.arange(2, lowcomponents + 2, dtype=np.float64)**(-3/8) / T
+    dflow  = (3/10) * T**(10/3) * flow**(13/3)
+
+    # high-frequency basis
+    fhigh  = np.arange(1, components + 1, dtype=np.float64) / T
+    dfhigh = np.ones(components) / T
+
+    # = (3/10)*T^(10/3)*(1/T)^(13/3) + 1/2T
+    dfhigh[0] = (4/5) / T
+
+    f  = np.concatenate([flow[::-1],  fhigh])
+    df = np.concatenate([dflow[::-1], dfhigh])
+
+    fmat = np.zeros((psr.toas.shape[0], 2*len(f)), dtype=np.float64)
+    for i in range(len(f)):
+        fmat[:, 2*i  ] = np.sin(2.0 * jnp.pi * f[i] * psr.toas)
+        fmat[:, 2*i+1] = np.cos(2.0 * jnp.pi * f[i] * psr.toas)
+
+    return np.repeat(f, 2), np.repeat(df, 2), fmat
+
+
 def fourierbasis(psr, components, T=None):
     if T is None:
         T = getspan(psr)
@@ -253,11 +281,12 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
         fmatfunc.params = fargmap
 
     gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmatfunc if callable(fmat) else fmat)
-    gp.index = {f'{psr.name}_{name}_coefficients({2*components})': slice(0,2*components)}
+    gp.index = {f'{psr.name}_{name}_coefficients({len(f)})': slice(0,len(f))} # better for cosine
     gp.name, gp.pos = psr.name, psr.pos
     gp.gpname, gp.gpcommon = name, common
 
     return gp
+
 
 # for use in ArrayLikelihood. Same process for all pulsars.
 def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, common=[], vector=False, name='fourierCommonGP'):
@@ -484,7 +513,53 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
     return gp
 
 
+
+# get jax.numpy.interp to interpolate a full vector
+def interp_value(gamma, g, c_row):
+    return jnp.interp(gamma, g, c_row)
+interp_vector = jax.vmap(interp_value, in_axes=(None, None, 1))
+
+
 # priors: these need to be jax functions
+
+datadir = os.path.join(os.path.dirname(__file__), '../../data')
+cosine_g = np.linspace(0, 7, 71)
+cosine_c = np.load(os.path.join(datadir, 'cosine_powerlaw_c.npy'))
+
+def cosinefourierbasis(psr, components, T=None):
+    if T is None:
+        T = getspan(psr)
+
+    return fourierbasis(psr, components, 2*T)
+
+def makecosinepowerlaw(components, T):
+    # interpolate cosine coefficients
+    # skip c_0 (it multiplies constant vectors, shouldn't matter)
+    g = jnp.array(cosine_g)
+    c = jnp.array(cosine_c[:,1:components+1])
+
+    def cosinepowerlaw(f, df, log10_A, gamma):
+        norm = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * T**(gamma - 1.0)
+
+        return jnp.repeat(norm * interp_vector(gamma, g, c), 2)
+
+    return cosinepowerlaw
+
+def makecosinepowerlaw_crn(components, crncomponents, T):
+    g = jnp.array(cosine_g)
+    c = jnp.array(cosine_c[:,1:components+1])
+
+    def cosinepowerlaw_crn(f, df, log10_A, gamma, crn_log10_A, crn_gamma):
+        norm = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * T**(gamma - 1.0)
+        crn_norm = (10.0**(2.0 * crn_log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (crn_gamma - 3.0) * T**(crn_gamma - 1.0)
+
+        phi = norm * interp_vector(gamma, g, c)
+        phi = phi.at[:crncomponents].add(crn_norm * interp_vector(crn_gamma, g, c)[:crncomponents])
+
+        return jnp.repeat(phi, 2)
+
+    return cosinepowerlaw_crn
+
 
 def powerlaw(f, df, log10_A, gamma):
     return (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df
@@ -505,7 +580,7 @@ def freespectrum(f, df, log10_rho: typing.Sequence):
 
 # combined red_noise + crn
 
-def makepowerlaw_crn(components):
+def makepowerlaw_crn(components, crn_gamma='variable'):
     if matrix.jnp == jnp:
         def powerlaw_crn(f, df, log10_A, gamma, crn_log10_A, crn_gamma):
             phi = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df
@@ -519,7 +594,11 @@ def makepowerlaw_crn(components):
                                    const.fyr ** (crn_gamma - 3.0) * f[:2*components] ** (-crn_gamma) * df[:2*components])
             return phi
 
-    return powerlaw_crn
+    if crn_gamma != 'variable':
+        return matrix.partial(powerlaw_crn, crn_gamma=crn_gamma)
+    else:
+        return powerlaw_crn
+
 
 def makefreespectrum_crn(components):
     if matrix.jnp == jnp:
