@@ -83,13 +83,13 @@ def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False):
 # uniques, counts = np.unique(bins, return_counts=True)
 # Umat = jnp.array(np.vstack([bins == unique for unique, count in zip(uniques, counts) if count > 1]).astype(jnp.float64).T)
 
-def quantize(toas):
+def quantize(toas, dt=1.0):
     isort = np.argsort(toas)
     bins = np.zeros_like(toas, np.int64)
 
     b, v = 0, toas.min()
     for j in isort:
-        if toas[j] - v > 1.0:
+        if toas[j] - v > dt:
             v = toas[j]
             b = b + 1
 
@@ -162,10 +162,17 @@ def makegp_ecorr(psr, noisedict={}, enterprise=False, scale=1.0):
 
 # timing model
 
-def makegp_improper(psr, fmat, constant=1.0e40, name='improperGP'):
-    return matrix.ConstantGP(matrix.NoiseMatrix1D_novar(constant * np.ones(fmat.shape[1])), fmat)
+def makegp_improper(psr, fmat, constant=1.0e40, name='improperGP', variable=False):
+    if variable:
+        def getphi(params):
+            return constant * jnp.ones(fmat.shape[1])
+        getphi.params = []
 
-def makegp_timing(psr, constant=None, variance=None, svd=False, scale=1.0):
+        return matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), fmat)
+    else:
+        return matrix.ConstantGP(matrix.NoiseMatrix1D_novar(constant * np.ones(fmat.shape[1])), fmat)
+
+def makegp_timing(psr, constant=None, variance=None, svd=False, scale=1.0, variable=False):
     if svd:
         fmat, _, _ = np.linalg.svd(scale * psr.Mmat, full_matrices=False)
     else:
@@ -178,11 +185,11 @@ def makegp_timing(psr, constant=None, variance=None, svd=False, scale=1.0):
     else:
         if constant is None:
             constant = variance * psr.Mmat.shape[0] / psr.Mmat.shape[1]
-            return makegp_improper(psr, fmat, constant=constant, name='timingmodel')
+            return makegp_improper(psr, fmat, constant=constant, name='timingmodel', variable=variable)
         else:
             raise ValueError("signals.makegp_timing() can take a specification of _either_ `constant` or `variance`.")
 
-    gp = makegp_improper(psr, fmat, constant=constant, name='timingmodel')
+    gp = makegp_improper(psr, fmat, constant=constant, name='timingmodel', variable=variable)
     gp.name = psr.name
     return gp
 
@@ -193,32 +200,6 @@ def getspan(psrs):
         return max(psr.toas.max() for psr in psrs) - min(psr.toas.min() for psr in psrs)
     else:
         return psrs.toas.max() - psrs.toas.min()
-
-
-def fourierxibasis(psr, components, T=None, lowcomponents=10):
-    if T is None:
-        T = getspan(psr)
-
-    # low-frequency basis, optimized for gamma = 13/3
-    flow  = np.arange(2, lowcomponents + 2, dtype=np.float64)**(-3/8) / T
-    dflow  = (3/10) * T**(10/3) * flow**(13/3)
-
-    # high-frequency basis
-    fhigh  = np.arange(1, components + 1, dtype=np.float64) / T
-    dfhigh = np.ones(components) / T
-
-    # = (3/10)*T^(10/3)*(1/T)^(13/3) + 1/2T
-    dfhigh[0] = (4/5) / T
-
-    f  = np.concatenate([flow[::-1],  fhigh])
-    df = np.concatenate([dflow[::-1], dfhigh])
-
-    fmat = np.zeros((psr.toas.shape[0], 2*len(f)), dtype=np.float64)
-    for i in range(len(f)):
-        fmat[:, 2*i  ] = np.sin(2.0 * jnp.pi * f[i] * psr.toas)
-        fmat[:, 2*i+1] = np.cos(2.0 * jnp.pi * f[i] * psr.toas)
-
-    return np.repeat(f, 2), np.repeat(df, 2), fmat
 
 
 def fourierbasis(psr, components, T=None):
@@ -513,52 +494,101 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
     return gp
 
 
-
-# get jax.numpy.interp to interpolate a full vector
-def interp_value(gamma, g, c_row):
-    return jnp.interp(gamma, g, c_row)
-interp_vector = jax.vmap(interp_value, in_axes=(None, None, 1))
-
-
-# priors: these need to be jax functions
-
 datadir = os.path.join(os.path.dirname(__file__), '../../data')
-cosine_g = np.linspace(0, 7, 71)
-cosine_c = np.load(os.path.join(datadir, 'cosine_powerlaw_c.npy'))
 
-def cosinefourierbasis(psr, components, T=None):
-    if T is None:
-        T = getspan(psr)
+cosinet_g = np.linspace(0, 7, 71)
+cosinet_t = np.linspace(0, 1, 100)
+cosinet_c = np.load(os.path.join(datadir, 'cosine_powerlaw_tb.npy'))
 
-    return fourierbasis(psr, components, 2*T)
+import functools
+interp_gammas = jax.vmap(jnp.interp, in_axes=(None, None, 1))
 
-def makecosinepowerlaw(components, T):
-    # interpolate cosine coefficients
-    # skip c_0 (it multiplies constant vectors, shouldn't matter)
-    g = jnp.array(cosine_g)
-    c = jnp.array(cosine_c[:,1:components+1])
+# interp_taus  = jax.vmap(jax.vmap(functools.partial(jnp.interp, left=0.0, right=0.0),
+#                                  in_axes=(0, None, None)),
+#                         in_axes=(0, None, None))
 
-    def cosinepowerlaw(f, df, log10_A, gamma):
+interp_bound = lambda x, xp, vp, r: jnp.interp(x, xp, vp, right=r, left=0.0)
+interp_taus = jax.vmap(jax.vmap(interp_bound, in_axes=(0, None, None, None)), in_axes=(0, None, None, None))
+
+def makepowerlaw_timedomain(Tspan):
+    T = Tspan
+
+    def powerlaw(tau, log10_A, gamma):
         norm = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * T**(gamma - 1.0)
 
-        return jnp.repeat(norm * interp_vector(gamma, g, c), 2)
+        intmap = interp_gammas(gamma, cosinet_g, cosinet_c)
+        intval = interp_taus(tau / T, cosinet_t, intmap, 1/norm)
 
-    return cosinepowerlaw
+        return norm * intval
 
-def makecosinepowerlaw_crn(components, crncomponents, T):
-    g = jnp.array(cosine_g)
-    c = jnp.array(cosine_c[:,1:components+1])
+    return powerlaw
 
-    def cosinepowerlaw_crn(f, df, log10_A, gamma, crn_log10_A, crn_gamma):
-        norm = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * T**(gamma - 1.0)
-        crn_norm = (10.0**(2.0 * crn_log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (crn_gamma - 3.0) * T**(crn_gamma - 1.0)
+def makepowerlaw_crn_timedomain(Tspan, Tspan_crn=None):
+    get_tmat = makepowerlaw_timedomain(Tspan)
+    get_tmat_crn = makepowerlaw_timedomain(Tspan if Tspan_crn is None else Tspan_crn)
 
-        phi = norm * interp_vector(gamma, g, c)
-        phi = phi.at[:crncomponents].add(crn_norm * interp_vector(crn_gamma, g, c)[:crncomponents])
+    def powerlaw(tau, log10_A, gamma, crn_log10_A, crn_gamma):
+        return get_tmat(tau, log10_A, gamma) + get_tmat_crn(tau, crn_log10_A, crn_gamma)
 
-        return jnp.repeat(phi, 2)
+    return powerlaw
 
-    return cosinepowerlaw_crn
+
+def makegp_timedomain(psr, covariance, dt=1.0, common=[], name='timedomainGP'):
+    argspec = inspect.getfullargspec(covariance)
+    argmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}')
+              for arg in argspec.args if arg not in ['tau']]
+
+    bins = quantize(psr.toas, dt)
+    Umat = np.vstack([bins == i for i in range(bins.max() + 1)]).T.astype('d')
+    toas = psr.toas @ Umat / Umat.sum(axis=0)
+
+    get_tmat = covariance
+    tau = jnp.abs(toas[:, jnp.newaxis] - toas[jnp.newaxis, :])
+
+    def getphi(params):
+        return get_tmat(tau, *[params[arg] for arg in argmap])
+    getphi.params = argmap
+
+    return matrix.VariableGP(matrix.NoiseMatrix2D_var(getphi), Umat)
+
+
+def makecommongp_timedomain(psrs, covariance, dt=1.0, common=[], name='timedomainCommonGP'):
+    argspec = inspect.getfullargspec(covariance)
+    argmaps = [[(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}')
+                for psr in psrs] for arg in argspec.args if arg not in ['tau']]
+
+    # quantize toas for each pulsar and create "exploder" U matrices
+    def quantized(psr):
+        bins = quantize(psr.toas, dt)
+        Umat = np.vstack([bins == i for i in range(bins.max() + 1)]).T.astype('d')
+        return psr.toas @ Umat / Umat.sum(axis=0), Umat
+    toas, Umats = zip(*[quantized(psr) for psr in psrs])
+
+    # pad the Umats and toas to the same number of coarse toas
+    nepochs = max(len(toa) for toa in toas)
+    Umats = [np.pad(Umat, ((0,0), (0,nepochs - Umat.shape[1]))) for Umat in Umats]
+    stdtoas = np.array([np.pad(toa, (0,nepochs - len(toa))) for toa in toas])
+
+    taus = np.abs(stdtoas[:, :, jnp.newaxis] - stdtoas[:, jnp.newaxis, :])
+    # the idea is to manage the padded region by triggering the left interp to get 0,
+    # and the right interp to get 1 / diagonal value, which becomes one with normalization
+    # the resulting matrix is poorly conditioned
+    for i, toa in enumerate(toas):
+        taus[i, len(toa):, :] = -1.0
+        taus[i, :, len(toa):] = -1.0
+        taus[i, range(len(toa), nepochs), range(len(toa), nepochs)] = 1e40
+
+    get_tmat = jax.vmap(covariance, in_axes=[0] + [0]*len(argmaps))
+
+    def getphi(params):
+        vpars = [matrix.jnparray([params[arg] for arg in argmap]) if isinstance(argmap, list) else params[argmap]
+                for argmap in argmaps]
+        return get_tmat(taus, *vpars)
+    getphi.params = sorted(set(sum([argmap for argmap in argmaps], [])))
+
+    gp = matrix.VariableGP(matrix.VectorNoiseMatrix2D_var(getphi), Umats)
+
+    return gp
 
 
 def powerlaw(f, df, log10_A, gamma):
@@ -614,6 +644,7 @@ def makefreespectrum_crn(components):
 
     return freespectrum_crn
 
+
 # ORFs: OK as numpy functions
 
 def uncorrelated_orf(pos1, pos2):
@@ -638,6 +669,7 @@ def dipole_orf(pos1, pos2):
         return 1.0 + 1.0e-6
     else:
         return np.dot(pos1, pos2)
+
 
 # delay
 

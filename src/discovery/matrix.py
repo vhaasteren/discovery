@@ -480,9 +480,14 @@ class NoiseMatrix2D_var(VariableKernel):
 
         # closes on getN
         def inv(params):
-            N = getN(params)
+#            N = getN(params)
+#            return jnp.linalg.inv(N), jnp.linalg.slogdet(N)[1]
 
-            return jnp.linalg.inv(N), jnp.linalg.slogdet(N)[1]
+            cf = matrix_factor(getN(params))
+            inv = matrix_solve(cf, jnp.eye(cf[0].shape[0]))
+            ld = matrix_norm * jnp.logdet(jnp.diag(cf[0]))
+
+            return inv, ld
         inv.params = getN.params
 
         return inv
@@ -533,6 +538,7 @@ class VectorNoiseMatrix1D_var(VariableKernel):
 
     def make_inv(self):
         getN = self.getN
+
         def inv(params):
             N = getN(params)
 
@@ -541,6 +547,35 @@ class VectorNoiseMatrix1D_var(VariableKernel):
             # n, m = N.shape
             # i1, i2 = jnp.diag_indices(m, ndim=2) # it's hard to vectorize numpy.diag!
             # return jnpzeros((n, m, m)).at[:,i1,i2].set(1.0 / N), jnp.sum(jnp.log(N), axis=1)
+        inv.params = getN.params
+        inv.vector = True
+
+        return inv
+
+
+class VectorNoiseMatrix2D_var(VariableKernel):
+    def __init__(self, getN):
+        self.getN = getN
+        self.params = getN.params
+
+    def make_inv(self):
+        getN = self.getN
+
+        def inv(params):
+            N = getN(params)
+
+            # simple inversion
+            # if method == 'inv':
+            #    return jnp.linalg.inv(N), jnp.linalg.slogdet(N)[1]
+
+            cf = matrix_factor(N)
+            inv = matrix_solve(cf, jnp.repeat(jnp.eye(cf[0].shape[1])[jnp.newaxis, :, :],
+                                              repeats=cf[0].shape[0], axis=0))
+
+            i1, i2 = jnp.diag_indices(cf[0].shape[1], ndim=2)
+            ld = matrix_norm * jnp.sum(jnp.log(jnp.abs(cf[0][:, i1, i2])), axis=1)
+
+            return inv, ld
         inv.params = getN.params
         inv.vector = True
 
@@ -943,6 +978,14 @@ class ShermanMorrisonKernel_varP(VariableKernel):
             cf = matrix_factor(Pinv + FtNmF)
             ytXy = NmFty.T @ matrix_solve(cf, NmFty)
 
+            # direct inv
+            # ytXy = NmFty.T @ jnp.linalg.inv(Pinv + FtNmF) @ NmFty
+
+            # SVD solution
+            # U, S, VT = jnp.linalg.svd(Pinv + FtNmF)
+            # ytXy = NmFty.T @ VT.T @ np.diag(1/S) @ U.T @ NmFty
+            # matrix_norm, cf = 1.0, (np.diag(S), None)
+
             return -0.5 * (ytNmy - ytXy) - 0.5 * (ldN + ldP + matrix_norm * jnp.logdet(jnp.diag(cf[0])))
 
         kernelproduct.params = P_var_inv.params
@@ -1237,8 +1280,11 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
         def kernelproduct(params):
             Pinv, ldP = P_var_inv(params)            # Pinv.shape = FtNmF.shape = [npsr, ngp, ngp]
 
-            i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
-            cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            if Pinv.ndim == 2:
+                i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
+                cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            else:
+                cf = matrix_factor(FtNmF + Pinv)
 
             # cf = jsp.linalg.cho_factor(Pinv + FtNmF)
 
