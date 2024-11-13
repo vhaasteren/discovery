@@ -380,7 +380,7 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
 
     def priorfunc(params):
         return jnp.concatenate([prior(f, df, *[params[arg] for arg in argmap]) for argmap in argmaps])
-    priorfunc.params = sum(argmaps, [])
+    priorfunc.params = sorted(set(sum(argmaps, [])))
 
     def invprior(params):
         p = priorfunc(params)
