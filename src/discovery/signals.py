@@ -498,7 +498,10 @@ datadir = os.path.join(os.path.dirname(__file__), '../../data')
 
 cosinet_g = np.linspace(0, 7, 71)
 cosinet_t = np.linspace(0, 1, 100)
-cosinet_c = np.load(os.path.join(datadir, 'cosine_powerlaw_tb.npy'))
+try:
+    cosinet_c = np.load(os.path.join(datadir, 'cosine_powerlaw_tb.npy'))
+except:
+    pass
 
 import functools
 interp_gammas = jax.vmap(jnp.interp, in_axes=(None, None, 1))
