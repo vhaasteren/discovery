@@ -488,6 +488,7 @@ class ArrayLikelihood:
 
             return loglike
         elif self.commongp is None:
+            # commongp = matrix.VectorCompoundGP(self.globalgp)
             raise NotImplementedError("ArrayLikelihood does not support a globalgp without a commongp")
         elif self.globalgp is None:
             # merge common GPs if necessary
