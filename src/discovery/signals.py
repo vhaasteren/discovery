@@ -36,9 +36,15 @@ def makenoise_measurement_simple(psr, noisedict={}):
 
         return matrix.NoiseMatrix1D_var(getnoise)
 
+
 # nanograv backends
-def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False):
-    backends = sorted(set(psr.backend_flags))
+def selection_backend_flags(psr):
+    return psr.backend_flags
+
+
+def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False, selection=selection_backend_flags):
+    backend_flags = selection(psr)
+    backends = [b for b in sorted(set(backend_flags)) if b != '']
 
     efacs = [f'{psr.name}_{backend}_efac' for backend in backends]
     if tnequad:
@@ -48,7 +54,7 @@ def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False):
         log10_t2equads = [f'{psr.name}_{backend}_log10_t2equad' for backend in backends]
         params = efacs + log10_t2equads
 
-    masks = [(psr.backend_flags == backend) for backend in backends]
+    masks = [(backend_flags == backend) for backend in backends]
     logscale = np.log10(scale)
 
     if all(par in noisedict for par in params):
@@ -119,11 +125,12 @@ def makegp_ecorr_simple(psr, noisedict={}):
         return matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), Umat)
 
 # nanograv backends
-def makegp_ecorr(psr, noisedict={}, enterprise=False, scale=1.0):
+def makegp_ecorr(psr, noisedict={}, enterprise=False, scale=1.0, selection=selection_backend_flags):
     log10_ecorrs, Umats = [], []
 
-    backends = sorted(set(psr.backend_flags))
-    masks = [np.array(psr.backend_flags == backend) for backend in backends]
+    backend_flags = selection(psr)
+    backends = [b for b in sorted(set(backend_flags)) if b != '']
+    masks = [np.array(backend_flags == backend) for backend in backends]
     for backend, mask in zip(backends, masks):
         log10_ecorrs.append(f'{psr.name}_{backend}_log10_ecorr')
 
