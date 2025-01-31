@@ -255,7 +255,7 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
     def priorfunc(params):
         return prior(f, df, *[params[arg] for arg in argmap])
     priorfunc.params = argmap
-    priorfunc.type = argspec.annotations.get('return')
+    priorfunc.type = getattr(prior, 'type', None)
 
     if callable(fmat):
         argspec = inspect.getfullargspec(fmat)
@@ -302,7 +302,7 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
             return vprior(f, df, *[params[arg] for arg in argmap])
 
         priorfunc.params = sorted(argmap)
-        priorfunc.type = argspec.annotations.get('return')
+        priorfunc.type = getattr(prior, 'type', None)
     else:
         vprior = jax.vmap(prior, in_axes=[None, None] +
                                          [0 if isinstance(argmap, list) else None for argmap in argmaps])
@@ -313,7 +313,7 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
             return vprior(f, df, *vpars)
 
         priorfunc.params = sorted(set(sum([argmap if isinstance(argmap, list) else [argmap] for argmap in argmaps], [])))
-        priorfunc.type = argspec.annotations.get('return')
+        priorfunc.type = getattr(prior, 'type', None)
 
     gp = matrix.VariableGP(matrix.VectorNoiseMatrix12D_var(priorfunc), fmats)
     gp.index = {f'{psr.name}_{name}_coefficients({len(f)})': slice(len(f)*i,len(f)*(i+1))
@@ -441,7 +441,7 @@ def makegp_rngw_global(psrs, rnprior, rncomponents, gwprior, gworf, gwcomponents
 
     return gp
 
-def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourierbasis, name='globalFourierGP'):
+def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourierbasis, name='fourierGlobalGP'):
     priors = priors if isinstance(priors, list) else [priors]
     orfs   = orfs   if isinstance(orfs, list)   else [orfs]
 
@@ -461,46 +461,53 @@ def makegp_fourier_global(psrs, priors, orfs, components, T, fourierbasis=fourie
         prior, orfmat, argmap = priors[0], orfmats[0], argmaps[0]
 
         def priorfunc(params):
-            phidiag = prior(f, df, *[params[arg] for arg in argmap])
+            phi = prior(f, df, *[params[arg] for arg in argmap])
 
             # the jnp.dot handles the "pixel basis" case where the elements of orfmat are n-vectors
             # and phidiag is an (m x n)-matrix; here n is the number of pixels and m of Fourier components
-            return jnp.block([[jnp.diag(jnp.dot(phidiag, val)) for val in row] for row in orfmat])
+            return jnp.block([[jnp.make2d(jnp.dot(phi, val)) for val in row] for row in orfmat])
         priorfunc.params = argmap
+        priorfunc.type = getattr(prior, 'type', None)
 
         # if we're not in the pixel-basis case we can take a shortcut in making the inverse
         if orfmat.ndim == 2:
-            # invorf, orflogdet = jnp.linalg.inv(orfmat), jnp.linalg.slogdet(orfmat)[1]
             invorf, orflogdet = matrix.jnparray(np.linalg.inv(orfmat)), np.linalg.slogdet(orfmat)[1]
             def invprior(params):
-                invphidiag = 1.0 / prior(f, df, *[params[arg] for arg in argmap])
+                phi = prior(f, df, *[params[arg] for arg in argmap])
+                invphi = 1.0 / phi if phi.ndim == 1 else jnp.linalg.inv(phi)
+                logdetphi = jnp.sum(jnp.log(phi)) if phi.ndim == 1 else jnp.linalg.slogdet(phi)[1]
 
                 # |S_ij Gamma_ab| = prod_i (|S_i Gamma_ab|) = prod_i (S_i^npsr |Gamma_ab|)
                 # log |S_ij Gamma_ab| = log (prod_i S_i^npsr) + log prod_i |Gamma_ab|
                 #                     = npsr * sum_i log S_i + nfreqs |Gamma_ab|
 
-                return (jnp.block([[jnp.diag(val * invphidiag) for val in row] for row in invorf]),
-                        invphidiag.shape[0] * orflogdet - orfmat.shape[0] * jnp.sum(jnp.log(invphidiag)))
+                return (jnp.block([[jnp.make2d(val * invphi) for val in row] for row in invorf]),
+                        phi.shape[0] * orflogdet + orfmat.shape[0] * logdetphi)
+                        # was -orfmat.shape[0] * jnp.sum(jnp.log(invphidiag)))
             invprior.params = argmap
+            invprior.type = getattr(prior, 'type', None)
         else:
             invprior = None
     else:
         def priorfunc(params):
-            phidiags = [prior(f, df, *[params[arg] for arg in argmap]) for prior, argmap in zip(priors, argmaps)]
+            phis = [prior(f, df, *[params[arg] for arg in argmap]) for prior, argmap in zip(priors, argmaps)]
 
-            return sum(jnp.block([[jnp.diag(val * phidiag) for val in row] for row in orfmat])
-                       for phidiag, orfmat in zip(phidiags, orfmats))
+            return sum(jnp.block([[jnp.make2d(val * phi) for val in row] for row in orfmat])
+                       for phi, orfmat in zip(phis, orfmats))
         priorfunc.params = sorted(set.union(*[set(argmap) for argmap in argmaps]))
+        priorfunc.type = getattr(prior, 'type', None)
 
         invprior = None
 
-    gp = matrix.GlobalVariableGP(matrix.NoiseMatrix2D_var(priorfunc), fmats, invprior)
-    gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
-                slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
+    gp = matrix.GlobalVariableGP(matrix.NoiseMatrix12D_var(priorfunc), fmats, invprior)
+    gp.index = {f'{psr.name}_{name}_coefficients({len(f)})':
+                slice(len(f)*i, len(f)*(i+1)) for i, psr in enumerate(psrs)}
     gp.pos = [psr.pos for psr in psrs]
     gp.name = [psr.name for psr in psrs]
 
     return gp
+
+makegp_fourier_global = makeglobalgp_fourier
 
 
 datadir = os.path.join(os.path.dirname(__file__), '../../data')
@@ -641,7 +648,6 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
     fs = matrix.jnparray(freqs[ind:])
     zs = jnp.zeros(ind)
 
-    @functools.wraps(psdfunc)
     def covmat(*args):
         psd = jnp.concatenate([jnp.zeros(ind), psdfunc(fs, 1.0, *args[2:])])
 
@@ -651,7 +657,7 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
 
         return matrix.jsp.linalg.toeplitz(Ctau[:components])
     covmat.__signature__ = inspect.signature(psdfunc)
-    covmat.__annotations__['return'] = jax.Array
+    covmat.type = jax.Array
 
     return covmat
 
@@ -662,9 +668,13 @@ def makegp_fftcov(psr, prior, components, T=None, oversample=3, cutoff=1, common
     return makegp_fourier(psr, psd2cov(prior, components, T, oversample, cutoff),
                           components, T=T, fourierbasis=timeinterpbasis, common=common, name=name)
 
-def makecommongp_fftcov(psrs, prior, components, T, oversample=2, cutoff=None, common=[], vector=False, name='fftcovCommonGP'):
+def makecommongp_fftcov(psrs, prior, components, T, oversample=2, cutoff=1, common=[], vector=False, name='fftcovCommonGP'):
     return makecommongp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff),
                                 components, T, fourierbasis=timeinterpbasis, common=common, vector=vector, name=name)
+
+def makeglobalgp_fftcov(psrs, prior, orf, components, T, oversample=2, cutoff=1, name='fftcovGlobalGP'):
+    return makegp_fourier_global(psrs, psd2cov(prior, components, T, oversample, cutoff), orf,
+                                 components, T, fourierbasis=timeinterpbasis, name=name)
 
 
 def powerlaw(f, df, log10_A, gamma):

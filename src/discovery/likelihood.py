@@ -558,6 +558,7 @@ class ArrayLikelihood:
                 #    cf = matrix.jsp.linalg.cho_factor(Pinv)
 
                 cf = matrix.matrix_factor(Pinv + matrix.jsp.linalg.block_diag(*terms[2]))
+
                 return p0 + 0.5 * (FtNmy.T @ matrix.matrix_solve(cf, FtNmy) - ldP - matrix.matrix_norm * matrix.jnp.sum(matrix.jnp.log(matrix.jnp.diag(cf[0]))))
 
             loglike.params = sorted(kterms.params + P_var_inv.params)

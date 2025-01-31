@@ -17,6 +17,9 @@ def config(**kwargs):
     np.logdet = lambda a: np.sum(np.log(np.abs(a)))
     jax.numpy.logdet = lambda a: jax.numpy.sum(jax.numpy.log(jax.numpy.abs(a)))
 
+    np.make2d = lambda a: a if a.ndim == 2 else np.diag(a)
+    jax.numpy.make2d = lambda a: a if a.ndim == 2 else jax.numpy.diag(a)
+
     backend = kwargs.get('backend')
 
     if backend == 'numpy':
@@ -1297,12 +1300,11 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
             Pinv, ldP = P_var_inv(params)            # Pinv.shape = FtNmF.shape = [npsr, ngp, ngp]
 
             if Pinv.ndim == 2:
+                # Pinv is diagonal
                 i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
                 cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
             else:
                 cf = matrix_factor(FtNmF + Pinv)
-
-            # cf = jsp.linalg.cho_factor(Pinv + FtNmF)
 
             ytXy = jnp.sum(NmFty * matrix_solve(cf, NmFty)) # was NmFty.T @ jsp.linalg.cho_solve(...)
 
@@ -1416,8 +1418,11 @@ class VectorShermanMorrisonKernel_varP(VariableKernel):
         def kernelterms(params):
             Pinv, ldP = P_var_inv(params)
 
-            i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
-            cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            if Pinv.ndim == 2:
+                i1, i2 = jnp.diag_indices(Pinv.shape[1], ndim=2)
+                cf = matrix_factor(FtNmF.at[:,i1,i2].add(Pinv))
+            else:
+                cf = matrix_factor(FtNmF + Pinv)
 
             sol = matrix_solve(cf, FtNmy)
             sol2 = matrix_solve(cf, FtNmT)
