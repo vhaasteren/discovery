@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 import functools
+import inspect
 
 import numpy as np
 import scipy as sp
@@ -11,7 +12,7 @@ import jax.tree_util
 
 def config(**kwargs):
     global jnp, jsp, jnparray, jnpzeros, intarray, jnpkey, jnpsplit, jnpnormal
-    global matrix_factor, matrix_solve, matrix_norm
+    global matrix_factor, matrix_solve, matrix_norm, partial
 
     np.logdet = lambda a: np.sum(np.log(np.abs(a)))
     jax.numpy.logdet = lambda a: jax.numpy.sum(jax.numpy.log(jax.numpy.abs(a)))
@@ -307,6 +308,15 @@ def CompoundDelay(delaylist):
 
     return delayfunc
 
+
+# dispatch to NoiseMatrix1D or NoiseMatrix2D based on annotation
+
+def NoiseMatrix12D_var(getN):
+    if getN.type == jax.Array:
+        return NoiseMatrix2D_var(getN)
+    else:
+        return NoiseMatrix1D_var(getN)
+
 # consider passing inv as a 1D object
 
 class NoiseMatrix1D_novar(ConstantKernel):
@@ -517,6 +527,13 @@ class NoiseMatrix2D_var(VariableKernel):
         sample.params = getN.params
 
         return sample
+
+
+def VectorNoiseMatrix12D_var(getN):
+    if getN.type == jax.Array:
+        return VectorNoiseMatrix2D_var(getN)
+    else:
+        return VectorNoiseMatrix1D_var(getN)
 
 
 class VectorNoiseMatrix1D_var(VariableKernel):

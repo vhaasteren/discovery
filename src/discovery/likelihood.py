@@ -457,7 +457,7 @@ class GlobalLikelihood:
 
 
 class ArrayLikelihood:
-    def __init__(self, psls, commongp=None, globalgp=None, transform=None):
+    def __init__(self, psls, *, commongp=None, globalgp=None, transform=None):
         self.psls = psls
         self.commongp = commongp
         self.globalgp = globalgp

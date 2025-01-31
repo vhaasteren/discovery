@@ -255,9 +255,8 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
     def priorfunc(params):
         return prior(f, df, *[params[arg] for arg in argmap])
     priorfunc.params = argmap
+    priorfunc.type = argspec.annotations.get('return')
 
-    # TODO: I'd like my makegp_fourier to be cleaner than this
-    # also, the argmap code can be modularized
     if callable(fmat):
         argspec = inspect.getfullargspec(fmat)
         fargmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}') +
@@ -268,7 +267,7 @@ def makegp_fourier(psr, prior, components, T=None, fourierbasis=fourierbasis, co
             return fmat(*[params[arg] for arg in fargmap])
         fmatfunc.params = fargmap
 
-    gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmatfunc if callable(fmat) else fmat)
+    gp = matrix.VariableGP(matrix.NoiseMatrix12D_var(priorfunc), fmatfunc if callable(fmat) else fmat)
     gp.index = {f'{psr.name}_{name}_coefficients({len(f)})': slice(0,len(f))} # better for cosine
     gp.name, gp.pos = psr.name, psr.pos
     gp.gpname, gp.gpcommon = name, common
@@ -303,6 +302,7 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
             return vprior(f, df, *[params[arg] for arg in argmap])
 
         priorfunc.params = sorted(argmap)
+        priorfunc.type = argspec.annotations.get('return')
     else:
         vprior = jax.vmap(prior, in_axes=[None, None] +
                                          [0 if isinstance(argmap, list) else None for argmap in argmaps])
@@ -313,9 +313,10 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
             return vprior(f, df, *vpars)
 
         priorfunc.params = sorted(set(sum([argmap if isinstance(argmap, list) else [argmap] for argmap in argmaps], [])))
+        priorfunc.type = argspec.annotations.get('return')
 
-    gp = matrix.VariableGP(matrix.VectorNoiseMatrix1D_var(priorfunc), fmats)
-    gp.index = {f'{psr.name}_{name}_coefficients({2*components})': slice(2*components*i,2*components*(i+1))
+    gp = matrix.VariableGP(matrix.VectorNoiseMatrix12D_var(priorfunc), fmats)
+    gp.index = {f'{psr.name}_{name}_coefficients({len(f)})': slice(len(f)*i,len(f)*(i+1))
                 for i, psr in enumerate(psrs)}
 
     return gp
@@ -395,6 +396,7 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
     invprior.params = priorfunc.params
 
     gp = matrix.GlobalVariableGP(matrix.NoiseMatrix1D_var(priorfunc), fmats, invprior)
+
     gp.index = {f'{psr.name}_{name}_coefficients({2*components})':
                 slice((2*components)*i, (2*components)*(i+1)) for i, psr in enumerate(psrs)}
     gp.pos = [psr.pos for psr in psrs]
@@ -599,6 +601,73 @@ def makecommongp_timedomain(psrs, covariance, dt=1.0, common=[], name='timedomai
     gp = matrix.VariableGP(matrix.VectorNoiseMatrix2D_var(getphi), Umats)
 
     return gp
+
+
+# time-interpolated covariance matrix from FFT
+
+def timeinterpbasis(psr, components, T=None, start_time=None):
+    if start_time is None:
+        start_time = np.min(psr.toas)
+    else:
+        if start_time > np.min(psr.toas):
+            raise ValueError('Coarse time basis start must be earlier than earliest TOA.')
+
+    if T is None:
+        T = getspan(psr)
+
+    t_fine = psr.toas
+    t_coarse = np.linspace(start_time, start_time + T, components)
+    dt_coarse = t_coarse[1] - t_coarse[0]
+
+    idx = np.arange(len(t_fine))
+    idy = np.searchsorted(t_coarse, t_fine)
+    idy[idy == 0] = 1
+
+    Bmat = np.zeros((len(t_fine), len(t_coarse)), 'd')
+
+    Bmat[idx, idy] = (t_fine - t_coarse[idy - 1]) / dt_coarse
+    Bmat[idx, idy - 1] = (t_coarse[idy] - t_fine) / dt_coarse
+
+    return t_coarse, dt_coarse, Bmat
+
+def psd2cov(psdfunc, components, T, oversample=2, cutoff=None):
+    if cutoff is None:
+        cutoff = oversample + 1
+
+    n_freqs = (components // 2 + 1) * oversample
+    fmax = (components - 1) / (2*T)
+    freqs = np.linspace(0, fmax, n_freqs)
+    df = fmax / (n_freqs - 1)
+
+    ind = int(np.ceil(1 / (cutoff*T) / df))
+
+    fs = matrix.jnparray(freqs[ind:])
+    zs = jnp.zeros(ind)
+
+    @functools.wraps(psdfunc)
+    def covmat(*args):
+        psd = jnp.concatenate([jnp.zeros(ind), psdfunc(fs, 1.0, *args[2:])])
+
+        fullpsd = jnp.concatenate((psd, psd[-2:0:-1]))
+        Cfreq = jnp.fft.ifft(fullpsd, norm='backward')
+        Ctau = Cfreq.real * len(fullpsd) * df / 2
+
+        return matrix.jsp.linalg.toeplitz(Ctau[:components])
+    covmat.__signature__ = inspect.signature(psdfunc)
+    covmat.__annotations__['return'] = jax.Array
+
+    return covmat
+
+def makegp_timeinterp(psr, prior, components, T=None, oversample=2, cutoff=None, common=[], name='timeinterpGP'):
+    if T is None:
+        T = getspan(psr)
+
+    return makegp_fourier(psr, psd2cov(prior, components, T, oversample, cutoff),
+                          components, T=T, fourierbasis=timeinterpbasis, common=common, name=name)
+
+def makecommongp_timeinterp(psrs, prior, components, T, oversample=2, cutoff=None, common=[], vector=False, name='timeinterpCommonGP'):
+    return makecommongp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff),
+                                components, T, fourierbasis=timeinterpbasis, common=common, vector=vector, name=name)
 
 
 def powerlaw(f, df, log10_A, gamma):
