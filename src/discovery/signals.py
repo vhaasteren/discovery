@@ -630,10 +630,7 @@ def timeinterpbasis(psr, components, T=None, start_time=None):
 
     return t_coarse, dt_coarse, Bmat
 
-def psd2cov(psdfunc, components, T, oversample=2, cutoff=None):
-    if cutoff is None:
-        cutoff = oversample + 1
-
+def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
     n_freqs = (components // 2 + 1) * oversample
     fmax = (components - 1) / (2*T)
     freqs = np.linspace(0, fmax, n_freqs)
@@ -658,14 +655,14 @@ def psd2cov(psdfunc, components, T, oversample=2, cutoff=None):
 
     return covmat
 
-def makegp_timeinterp(psr, prior, components, T=None, oversample=2, cutoff=None, common=[], name='timeinterpGP'):
+def makegp_fftcov(psr, prior, components, T=None, oversample=3, cutoff=1, common=[], name='fftcovGP'):
     if T is None:
         T = getspan(psr)
 
     return makegp_fourier(psr, psd2cov(prior, components, T, oversample, cutoff),
                           components, T=T, fourierbasis=timeinterpbasis, common=common, name=name)
 
-def makecommongp_timeinterp(psrs, prior, components, T, oversample=2, cutoff=None, common=[], vector=False, name='timeinterpCommonGP'):
+def makecommongp_fftcov(psrs, prior, components, T, oversample=2, cutoff=None, common=[], vector=False, name='fftcovCommonGP'):
     return makecommongp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff),
                                 components, T, fourierbasis=timeinterpbasis, common=common, vector=vector, name=name)
 
@@ -682,12 +679,25 @@ def make_powerlaw(scale=1.0):
 
     return powerlaw
 
+def brokenpowerlaw(f, df, log10_A, gamma, log10_fb):
+    kappa = 0.1 # smoothness of transition
+
+    return (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df * \
+        (1.0 + (f / 10.0**log10_fb) ** (1.0 / kappa)) ** (kappa * gamma)
 
 def freespectrum(f, df, log10_rho: typing.Sequence):
     return jnp.repeat(10.0**(2.0 * log10_rho), 2)
 
 
 # combined red_noise + crn
+
+# use matrix.partial to fix parameters, e.g. ds.partial(powerlaw_brokencrn, crn_gamma=4.33)
+def powerlaw_brokencrn(f, df, log10_A, gamma, crn_log10_A, crn_gamma, crn_log10_fb):
+    kappa = 0.1 # smoothness of transition
+
+    phi = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df
+    return phi + (10.0**(2.0 * crn_log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (crn_gamma - 3.0) * f ** (-crn_gamma) * df * \
+        (1 + (f / 10**crn_log10_fb) ** (1 / kappa)) ** (kappa * crn_gamma)
 
 def makepowerlaw_crn(components, crn_gamma='variable'):
     if matrix.jnp == jnp:

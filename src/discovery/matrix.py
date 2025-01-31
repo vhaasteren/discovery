@@ -79,6 +79,7 @@ class VariableKernel(Kernel):
 class GP:
     pass
 
+
 class ConstantGP:
     def __init__(self, Phi, F):
         self.Phi, self.F = Phi, F
@@ -86,11 +87,6 @@ class ConstantGP:
 class VariableGP:
     def __init__(self, Phi, F):
         self.Phi, self.F = Phi, F
-
-# class ComponentGP:
-#     def __init__(self, Phi, F, cfunc):
-#         self.Phi, self.F, self.cfunc = Phi, F, cfunc
-
 
 
 # note that all factories that return a GlobalVariableGP should define its `index`
