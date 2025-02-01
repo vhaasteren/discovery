@@ -668,11 +668,11 @@ def makegp_fftcov(psr, prior, components, T=None, oversample=3, cutoff=1, common
     return makegp_fourier(psr, psd2cov(prior, components, T, oversample, cutoff),
                           components, T=T, fourierbasis=timeinterpbasis, common=common, name=name)
 
-def makecommongp_fftcov(psrs, prior, components, T, oversample=2, cutoff=1, common=[], vector=False, name='fftcovCommonGP'):
+def makecommongp_fftcov(psrs, prior, components, T, oversample=3, cutoff=1, common=[], vector=False, name='fftcovCommonGP'):
     return makecommongp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff),
                                 components, T, fourierbasis=timeinterpbasis, common=common, vector=vector, name=name)
 
-def makeglobalgp_fftcov(psrs, prior, orf, components, T, oversample=2, cutoff=1, name='fftcovGlobalGP'):
+def makeglobalgp_fftcov(psrs, prior, orf, components, T, oversample=3, cutoff=1, name='fftcovGlobalGP'):
     return makegp_fourier_global(psrs, psd2cov(prior, components, T, oversample, cutoff), orf,
                                  components, T, fourierbasis=timeinterpbasis, name=name)
 
