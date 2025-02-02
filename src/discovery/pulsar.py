@@ -57,7 +57,7 @@ class Pulsar:
     tensor_columns = ['planetssb']
     # flags are done separately
 
-    metadata = ['name', 'dm', 'dm', 'dmx', 'pdist', 'pos', 'phi', 'theta']
+    metadata = ['name', 'dm', 'dmx', 'pdist', 'pos', 'phi', 'theta']
 
     def __init__(self):
         pass
