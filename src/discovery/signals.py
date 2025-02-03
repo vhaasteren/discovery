@@ -638,6 +638,9 @@ def timeinterpbasis(psr, components, T=None, start_time=None):
     return t_coarse, dt_coarse, Bmat
 
 def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
+    if components % 2 == 0:
+        raise ValueError('psd2cov number of components must be odd.')
+
     n_freqs = (components // 2 + 1) * oversample
     fmax = (components - 1) / (2*T)
     freqs = np.linspace(0, fmax, n_freqs)
@@ -645,11 +648,10 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
 
     ind = int(np.ceil(1 / (cutoff*T) / df))
 
-    fs = matrix.jnparray(freqs[ind:])
-    zs = jnp.zeros(ind)
+    fs, zs = matrix.jnparray(freqs[ind:]), jnp.zeros(ind)
 
     def covmat(*args):
-        psd = jnp.concatenate([jnp.zeros(ind), psdfunc(fs, 1.0, *args[2:])])
+        psd = jnp.concatenate([zs, psdfunc(fs, 1.0, *args[2:])])
 
         fullpsd = jnp.concatenate((psd, psd[-2:0:-1]))
         Cfreq = jnp.fft.ifft(fullpsd, norm='backward')
