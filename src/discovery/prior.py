@@ -24,10 +24,10 @@ priordict_standard = {
     "(.*_)?red_noise_gamma.*": [0, 7],  # deprecated
     "crn_log10_A.*": [-18, -11],
     "crn_gamma.*": [0, 7],
-    "crn_log10_fb": [-10, -6],
+    "crn_log10_fb": [-9, -7],
     "gw_(.*_)?log10_A": [-18, -11],
     "gw_(.*_)?gamma": [0, 7],
-    "gw_log10_fb": [-10, -6],
+    "gw_log10_fb": [-9, -7],
     "(.*_)?dmgp_log10_A": [-20, -11],
     "(.*_)?dmgp_gamma": [0, 7],
     "(.*_)?dmgp_alpha": [1, 3],
