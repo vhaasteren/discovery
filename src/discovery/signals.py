@@ -641,14 +641,14 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
     if components % 2 == 0:
         raise ValueError('psd2cov number of components must be odd.')
 
-    n_freqs = (components // 2 + 1) * oversample
+    n_freqs = (components // 2 + 1) * oversample - oversample + 1
     fmax = (components - 1) / (2*T)
     freqs = np.linspace(0, fmax, n_freqs)
     df = fmax / (n_freqs - 1)
 
-    ind = int(np.ceil(1 / (cutoff*T) / df))
+    i_cutoff = int(np.ceil(1 / (cutoff*T) / df - np.finfo(float).eps))
 
-    fs, zs = matrix.jnparray(freqs[ind:]), jnp.zeros(ind)
+    fs, zs = matrix.jnparray(freqs[i_cutoff:]), jnp.zeros(i_cutoff)
 
     def covmat(*args):
         psd = jnp.concatenate([zs, psdfunc(fs, 1.0, *args[2:])])
@@ -703,7 +703,6 @@ def freespectrum(f, df, log10_rho: typing.Sequence):
 
 # combined red_noise + crn
 
-# use matrix.partial to fix parameters, e.g. ds.partial(powerlaw_brokencrn, crn_gamma=4.33)
 def powerlaw_brokencrn(f, df, log10_A, gamma, crn_log10_A, crn_gamma, crn_log10_fb):
     kappa = 0.1 # smoothness of transition
 
