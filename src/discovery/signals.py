@@ -641,12 +641,12 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
     if components % 2 == 0:
         raise ValueError('psd2cov number of components must be odd.')
 
-    n_freqs = (components // 2 + 1) * oversample - oversample + 1
-    fmax = (components - 1) / (2*T)
+    n_freqs = int((components - 1) / 2 * oversample + 1)
+    fmax = (components - 1) / T / 2
     freqs = np.linspace(0, fmax, n_freqs)
-    df = fmax / (n_freqs - 1)
+    df = 1 / T / oversample
 
-    i_cutoff = int(np.ceil(1 / (cutoff*T) / df - np.finfo(float).eps))
+    i_cutoff = int(np.ceil(oversample / cutoff))
 
     fs, zs = matrix.jnparray(freqs[i_cutoff:]), jnp.zeros(i_cutoff)
 
