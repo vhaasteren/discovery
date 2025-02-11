@@ -637,7 +637,7 @@ def timeinterpbasis(psr, components, T=None, start_time=None):
 
     return t_coarse, dt_coarse, Bmat
 
-def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
+def psd2cov(psdfunc, components, T, oversample=3, cutoff=None):
     if components % 2 == 0:
         raise ValueError('psd2cov number of components must be odd.')
 
@@ -646,12 +646,17 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
     freqs = np.linspace(0, fmax, n_freqs)
     df = 1 / T / oversample
 
-    i_cutoff = int(np.ceil(oversample / cutoff))
-
-    fs, zs = matrix.jnparray(freqs[i_cutoff:]), jnp.zeros(i_cutoff)
+    if cutoff is not None:
+        i_cutoff = int(np.ceil(oversample / cutoff))
+        fs, zs = matrix.jnparray(freqs[i_cutoff:]), jnp.zeros(i_cutoff)
+    else:
+        fs = matrix.jnparray(freqs)
 
     def covmat(*args):
-        psd = jnp.concatenate([zs, psdfunc(fs, 1.0, *args[2:])])
+        if cutoff is not None:
+            psd = jnp.concatenate([zs, psdfunc(fs, 1.0, *args[2:])])
+        else:
+            psd = psdfunc(fs, 1.0, *args[2:])
 
         fullpsd = jnp.concatenate((psd, psd[-2:0:-1]))
         Cfreq = jnp.fft.ifft(fullpsd, norm='backward')
@@ -663,18 +668,18 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
 
     return covmat
 
-def makegp_fftcov(psr, prior, components, T=None, oversample=3, cutoff=1, common=[], name='fftcovGP'):
+def makegp_fftcov(psr, prior, components, T=None, oversample=3, cutoff=None, common=[], name='fftcovGP'):
     if T is None:
         T = getspan(psr)
 
     return makegp_fourier(psr, psd2cov(prior, components, T, oversample, cutoff),
                           components, T=T, fourierbasis=timeinterpbasis, common=common, name=name)
 
-def makecommongp_fftcov(psrs, prior, components, T, oversample=3, cutoff=1, common=[], vector=False, name='fftcovCommonGP'):
+def makecommongp_fftcov(psrs, prior, components, T, oversample=3, cutoff=None, common=[], vector=False, name='fftcovCommonGP'):
     return makecommongp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff),
                                 components, T, fourierbasis=timeinterpbasis, common=common, vector=vector, name=name)
 
-def makeglobalgp_fftcov(psrs, prior, orf, components, T, oversample=3, cutoff=1, name='fftcovGlobalGP'):
+def makeglobalgp_fftcov(psrs, prior, orf, components, T, oversample=3, cutoff=None, name='fftcovGlobalGP'):
     return makegp_fourier_global(psrs, psd2cov(prior, components, T, oversample, cutoff), orf,
                                  components, T, fourierbasis=timeinterpbasis, name=name)
 
@@ -709,6 +714,15 @@ def powerlaw_brokencrn(f, df, log10_A, gamma, crn_log10_A, crn_gamma, crn_log10_
     phi = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df
     return phi + (10.0**(2.0 * crn_log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (crn_gamma - 3.0) * f ** (-crn_gamma) * df * \
         (1 + (f / 10**crn_log10_fb) ** (1 / kappa)) ** (kappa * crn_gamma)
+
+def brokenpowerlaw_brokencrn(f, df, log10_A, gamma, log10_fb, crn_log10_A, crn_gamma, crn_log10_fb):
+    kappa = 0.1 # smoothness of transition
+
+    phi = (10.0**(2.0 * log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df * \
+        (1 + (f / 10**log10_fb) ** (1 / kappa)) ** (kappa * gamma)
+    return phi + (10.0**(2.0 * crn_log10_A)) / 12.0 / jnp.pi**2 * const.fyr ** (crn_gamma - 3.0) * f ** (-crn_gamma) * df * \
+        (1 + (f / 10**crn_log10_fb) ** (1 / kappa)) ** (kappa * crn_gamma)
+
 
 def makepowerlaw_crn(components, crn_gamma='variable'):
     if matrix.jnp == jnp:
