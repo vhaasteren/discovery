@@ -67,16 +67,34 @@ def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False, selection
 
         return matrix.NoiseMatrix1D_novar(noise)
     else:
-        toaerrs, masks = matrix.jnparray(scale * psr.toaerrs), [matrix.jnparray(mask) for mask in masks]
+        toaerrs2, masks = matrix.jnparray(scale**2 * psr.toaerrs**2), matrix.jnparray([mask for mask in masks])
+
         if tnequad:
             def getnoise(params):
-                return sum(mask * (params[efac]**2 * toaerrs**2 + 10.0**(2 * (logscale + params[log10_tnequad])))
-                        for mask, efac, log10_tnequad in zip(masks, efacs, log10_tnequads))
+                efac2  = matrix.jnparray([params[efac]**2 for efac in efacs])
+                equad2 = matrix.jnparray([10.0**(2 * (logscale + params[log10_tnequad])) for log10_tnequad in log10_tnequads])
+
+                return (masks * (efac2[:,jnp.newaxis] * toaerrs2[jnp.newaxis,:] + equad2[:,jnp.newaxis])).sum(axis=0)
         else:
             def getnoise(params):
-                return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * (logscale + params[log10_t2equad])))
-                        for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
+                efac2  = matrix.jnparray([params[efac]**2 for efac in efacs])
+                equad2 = matrix.jnparray([10.0**(2 * (logscale + params[log10_t2equad])) for log10_t2equad in log10_t2equads])
+
+                return (masks * efac2[:,jnp.newaxis] * (toaerrs2[jnp.newaxis,:] + equad2[:,jnp.newaxis])).sum(axis=0)
+
         getnoise.params = params
+
+        # previous version with Python sums
+        #
+        # toaerrs, masks = matrix.jnparray(scale * psr.toaerrs), [matrix.jnparray(mask) for mask in masks]
+        # if tnequad:
+        #     def getnoise(params):
+        #         return sum(mask * (params[efac]**2 * toaerrs**2 + 10.0**(2 * (logscale + params[log10_tnequad])))
+        #                 for mask, efac, log10_tnequad in zip(masks, efacs, log10_tnequads))
+        # else:
+        #     def getnoise(params):
+        #         return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * (logscale + params[log10_t2equad])))
+        #                 for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
 
         return matrix.NoiseMatrix1D_var(getnoise)
 
@@ -125,7 +143,7 @@ def makegp_ecorr_simple(psr, noisedict={}):
         return matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), Umat)
 
 # nanograv backends
-def makegp_ecorr(psr, noisedict={}, enterprise=False, scale=1.0, selection=selection_backend_flags):
+def makegp_ecorr(psr, noisedict={}, enterprise=False, scale=1.0, selection=selection_backend_flags, name='ecorrGP'):
     log10_ecorrs, Umats = [], []
 
     backend_flags = selection(psr)
@@ -165,7 +183,12 @@ def makegp_ecorr(psr, noisedict={}, enterprise=False, scale=1.0, selection=selec
             return sum(10.0**(2 * (logscale + params[log10_ecorr])) * pmask for (log10_ecorr, pmask) in zip(log10_ecorrs, pmasks))
         getphi.params = params
 
-        return matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), Umatall)
+        gp = matrix.VariableGP(matrix.NoiseMatrix1D_var(getphi), Umatall)
+        gp.index = {f'{psr.name}_{name}_coefficients({Umatall.shape[1]})': slice(0,Umatall.shape[1])} # better for cosine
+        gp.name, gp.pos = psr.name, psr.pos
+        gp.gpname, gp.gpcommon = name, []
+
+        return gp
 
 # timing model
 
