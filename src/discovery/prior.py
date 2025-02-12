@@ -39,6 +39,14 @@ priordict_standard = {
     r"(.*_)?red_noise_crn_log10_rho\(([0-9]*)\)": [-9, -4]
 }
 
+def getprior_uniform(par, priordict={}):
+    priordict = {**priordict_standard, **priordict}
+
+    for parname, range in priordict.items():
+        if re.match(parname, par):
+            return range
+
+    raise KeyError(f'getprior_uniform: no prior for parameter {par}.')
 
 def makelogprior_uniform(params, priordict={}):
     priordict = {**priordict_standard, **priordict}
