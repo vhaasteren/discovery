@@ -10,8 +10,10 @@ from .. import prior
 def makemodel_transformed(mylogl, transform=prior.makelogtransform_uniform, priordict={}):
     logx = transform(mylogl, priordict=priordict)
 
+    parlen = sum(int(par[par.index('(')+1:par.index(')')]) if '(' in par else 1 for par in logx.params)
+
     def numpyro_model():
-        pars = numpyro.sample('pars', dist.Normal(-10,10).expand([len(logx.params)]))
+        pars = numpyro.sample('pars', dist.Normal(-10,10).expand([parlen]))
         logl = logx(pars)
 
         numpyro.factor('logl', logl)

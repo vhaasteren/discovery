@@ -67,34 +67,34 @@ def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False, selection
 
         return matrix.NoiseMatrix1D_novar(noise)
     else:
-        toaerrs2, masks = matrix.jnparray(scale**2 * psr.toaerrs**2), matrix.jnparray([mask for mask in masks])
+        if True:
+            toaerrs2, masks = matrix.jnparray(scale**2 * psr.toaerrs**2), matrix.jnparray([mask for mask in masks])
 
-        if tnequad:
-            def getnoise(params):
-                efac2  = matrix.jnparray([params[efac]**2 for efac in efacs])
-                equad2 = matrix.jnparray([10.0**(2 * (logscale + params[log10_tnequad])) for log10_tnequad in log10_tnequads])
+            if tnequad:
+                def getnoise(params):
+                    efac2  = matrix.jnparray([params[efac]**2 for efac in efacs])
+                    equad2 = matrix.jnparray([10.0**(2 * (logscale + params[log10_tnequad])) for log10_tnequad in log10_tnequads])
 
-                return (masks * (efac2[:,jnp.newaxis] * toaerrs2[jnp.newaxis,:] + equad2[:,jnp.newaxis])).sum(axis=0)
+                    return (masks * (efac2[:,jnp.newaxis] * toaerrs2[jnp.newaxis,:] + equad2[:,jnp.newaxis])).sum(axis=0)
+            else:
+                def getnoise(params):
+                    efac2  = matrix.jnparray([params[efac]**2 for efac in efacs])
+                    equad2 = matrix.jnparray([10.0**(2 * (logscale + params[log10_t2equad])) for log10_t2equad in log10_t2equads])
+
+                    return (masks * efac2[:,jnp.newaxis] * (toaerrs2[jnp.newaxis,:] + equad2[:,jnp.newaxis])).sum(axis=0)
         else:
-            def getnoise(params):
-                efac2  = matrix.jnparray([params[efac]**2 for efac in efacs])
-                equad2 = matrix.jnparray([10.0**(2 * (logscale + params[log10_t2equad])) for log10_t2equad in log10_t2equads])
-
-                return (masks * efac2[:,jnp.newaxis] * (toaerrs2[jnp.newaxis,:] + equad2[:,jnp.newaxis])).sum(axis=0)
+            toaerrs, masks = matrix.jnparray(scale * psr.toaerrs), [matrix.jnparray(mask) for mask in masks]
+            if tnequad:
+                def getnoise(params):
+                    return sum(mask * (params[efac]**2 * toaerrs**2 + 10.0**(2 * (logscale + params[log10_tnequad])))
+                               for mask, efac, log10_tnequad in zip(masks, efacs, log10_tnequads))
+            else:
+                def getnoise(params):
+                    return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * (logscale + params[log10_t2equad])))
+                               for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
 
         getnoise.params = params
 
-        # previous version with Python sums
-        #
-        # toaerrs, masks = matrix.jnparray(scale * psr.toaerrs), [matrix.jnparray(mask) for mask in masks]
-        # if tnequad:
-        #     def getnoise(params):
-        #         return sum(mask * (params[efac]**2 * toaerrs**2 + 10.0**(2 * (logscale + params[log10_tnequad])))
-        #                 for mask, efac, log10_tnequad in zip(masks, efacs, log10_tnequads))
-        # else:
-        #     def getnoise(params):
-        #         return sum(mask * params[efac]**2 * (toaerrs**2 + 10.0**(2 * (logscale + params[log10_t2equad])))
-        #                 for mask, efac, log10_t2equad in zip(masks, efacs, log10_t2equads))
 
         return matrix.NoiseMatrix1D_var(getnoise)
 
