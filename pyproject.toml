@@ -62,8 +62,9 @@ mpi = [
 
 flow = [
     "optax",
-    "equinox",
-    "flowjax"
+    "flowjax",
+    "paramax",
+    "equinox"
 ]
 
 [project.urls]
