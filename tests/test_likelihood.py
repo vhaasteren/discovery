@@ -1,16 +1,160 @@
 #!/usr/bin/env python3
 """Tests for discovery likelihood"""
 
-import operator
-from functools import reduce
 from pathlib import Path
+import pytest
+
+import numpy as np
+
+import jax
+jax.config.update('jax_enable_x64', True)
 
 import discovery as ds
-import jax
-import pytest
 
 
 class TestLikelihood:
+    def _singlepsr_likelihoods(self, psr):
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement_simple(psr)])
+
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr)])
+
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr, psr.noisedict)])
+
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr),
+                                   ds.makegp_ecorr(psr)])
+
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr, psr.noisedict),
+                                   ds.makegp_ecorr(psr, psr.noisedict)])
+
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr, psr.noisedict),
+                                   ds.makegp_ecorr(psr, psr.noisedict),
+                                   ds.makegp_timing(psr, svd=True)])
+
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr, psr.noisedict),
+                                   ds.makegp_ecorr(psr, psr.noisedict),
+                                   ds.makegp_timing(psr, svd=True),
+                                   ds.makegp_fourier(psr, ds.powerlaw, components=30, name='rednoise')])
+
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr, psr.noisedict),
+                                   ds.makegp_ecorr(psr, psr.noisedict),
+                                   ds.makegp_timing(psr, svd=True),
+                                   ds.makegp_fourier(psr, ds.partial(ds.powerlaw, gamma=4.33), components=30, name='rednoise')])
+
+        p0 = {f'{psr.name}_rednoise_log10_rho(30)': 1e-6 * np.random.randn(30)}
+        yield ds.PulsarLikelihood([psr.residuals,
+                                   ds.makenoise_measurement(psr, psr.noisedict),
+                                   ds.makegp_ecorr(psr, psr.noisedict),
+                                   ds.makegp_timing(psr, svd=True),
+                                   ds.makegp_fourier(psr, ds.freespectrum, components=30, name='rednoise')]), p0
+
+    def _multipsr_likelihoods(self, psrs):
+        yield ds.ArrayLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                                       ds.makenoise_measurement(psr, psr.noisedict),
+                                                       ds.makegp_ecorr(psr, psr.noisedict),
+                                                       ds.makegp_timing(psr, svd=True),
+                                                       ds.makegp_fourier(psr, ds.powerlaw, components=30, name='rednoise')])
+                                  for psr in psrs])
+
+        T = ds.getspan(psrs)
+        mdl = ds.ArrayLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                                       ds.makenoise_measurement(psr, psr.noisedict),
+                                                       ds.makegp_ecorr(psr, psr.noisedict),
+                                                       ds.makegp_timing(psr, svd=True),
+                                                       ds.makegp_fourier(psr, ds.powerlaw, components=30, T=T, name='rednoise'),
+                                                       ds.makegp_fourier(psr, ds.powerlaw, components=14, T=T, name='crn',
+                                                                         common=['crn_log10_A', 'crn_gamma'])])
+                                  for psr in psrs])
+        p0 = ds.sample_uniform(mdl.logL.params)
+        yield mdl, p0
+
+        yield ds.ArrayLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                                       ds.makenoise_measurement(psr, psr.noisedict),
+                                                       ds.makegp_ecorr(psr, psr.noisedict),
+                                                       ds.makegp_timing(psr, svd=True)]) for psr in psrs],
+                                 commongp = [ds.makecommongp_fourier(psrs, ds.powerlaw, components=30, T=T, name='rednoise'),
+                                             ds.makecommongp_fourier(psrs, ds.powerlaw, components=14, T=T, name='crn',
+                                                                     common=['crn_log10_A', 'crn_gamma'])]), p0
+
+        yield ds.ArrayLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                                       ds.makenoise_measurement(psr, psr.noisedict),
+                                                       ds.makegp_ecorr(psr, psr.noisedict),
+                                                       ds.makegp_timing(psr, svd=True)]) for psr in psrs],
+                                 commongp = ds.makecommongp_fourier(psrs, ds.makepowerlaw_crn(components=14), components=30, T=T, name='rednoise',
+                                                                    common=['crn_log10_A', 'crn_gamma'])), p0
+
+        mdl = ds.ArrayLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                                       ds.makenoise_measurement(psr, psr.noisedict),
+                                                       ds.makegp_ecorr(psr, psr.noisedict),
+                                                       ds.makegp_timing(psr, svd=True)]) for psr in psrs],
+                                 commongp = ds.makecommongp_fourier(psrs, ds.powerlaw, components=30, T=T, name='rednoise'),
+                                 globalgp = ds.makeglobalgp_fourier(psrs, ds.powerlaw, ds.hd_orf, components=14, T=T, name='gw'))
+        p0 = ds.sample_uniform(mdl.logL.params)
+        yield mdl, p0
+
+        yield ds.GlobalLikelihood([ds.PulsarLikelihood([psr.residuals,
+                                                        ds.makenoise_measurement(psr, psr.noisedict),
+                                                        ds.makegp_ecorr(psr, psr.noisedict),
+                                                        ds.makegp_timing(psr, svd=True),
+                                                        ds.makegp_fourier(psr, ds.powerlaw, components=30, T=T, name='rednoise')]) for psr in psrs],
+                                  globalgp = ds.makeglobalgp_fourier(psrs, ds.powerlaw, ds.hd_orf, components=14, T=T, name='gw')), p0
+
+    @pytest.mark.integration
+    def test_multipsr_likelihood(self):
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+
+        psrfile1 = data_dir / "v1p1_de440_pint_bipm2019-B1855+09.feather"
+        psrfile2 = data_dir / "v1p1_de440_pint_bipm2019-J0023+0923.feather"
+        psrs = [ds.Pulsar.read_feather(psrfile1),
+                ds.Pulsar.read_feather(psrfile2)]
+
+        p0_old = None
+        for model in self._multipsr_likelihoods(psrs):
+            # some models return also a suggested parameter set
+            if isinstance(model, tuple):
+                model, p0 = model
+                logl = model.logL
+            else:
+                logl = model.logL
+                p0 = ds.sample_uniform(logl.params)
+
+            l1 = logl(p0)
+            l2 = jax.jit(logl)(p0)
+
+            assert np.allclose(l1, l2)
+
+            if p0 == p0_old:
+                assert np.allclose(l1, l1_old, atol=0.1)
+
+            p0_old, l1_old = p0, l1
+
+    @pytest.mark.integration
+    def test_singlepsr_likelihood(self):
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+
+        psrfile = data_dir / "v1p1_de440_pint_bipm2019-B1855+09.feather"
+        psr = ds.Pulsar.read_feather(psrfile)
+
+        for model in self._singlepsr_likelihoods(psr):
+            if isinstance(model, tuple):
+                model, p0 = model
+                logl = model.logL
+            else:
+                logl = model.logL
+                p0 = ds.sample_uniform(logl.params)
+
+            l1 = logl(p0)
+            l2 = jax.jit(logl)(p0)
+
+            assert np.allclose(l1, l2)
+
     @pytest.mark.integration
     def test_compare_enterprise(self):
         # The directory containing the pulsar feather files should be parallel to the tests directory
