@@ -5,6 +5,7 @@ import typing
 from collections.abc import Iterable
 
 import numpy as np
+import scipy.interpolate as si
 import jax
 import jax.numpy as jnp
 
@@ -507,6 +508,25 @@ def timeinterpbasis(psr, components, T=None, start_time=None):
 
     return t_coarse, dt_coarse, Bmat
 
+def make_timeinterpbasis(start_time=None, order=1):
+    def timeinterpbasis(psr, components, T=None):
+        t0 = start_time if start_time is not None else np.min(psr.toas)
+        if t0 > np.min(psr.toas):
+            raise ValueError('Coarse time basis start must be earlier than earliest TOA.')
+
+        if T is None:
+            T = getspan(psr)
+
+        t_fine = psr.toas
+        t_coarse = np.linspace(t0, t0 + T, components)
+        dt_coarse = t_coarse[1] - t_coarse[0]
+
+        Bmat = si.interp1d(t_coarse, np.identity(components), kind=order)(t_fine).T
+
+        return t_coarse, dt_coarse, Bmat
+
+    return timeinterpbasis
+
 def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
     if components % 2 == 0:
         raise ValueError('psd2cov number of components must be odd.')
@@ -538,18 +558,18 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
 
     return covmat
 
-def makegp_fftcov(psr, prior, components, T=None, oversample=3, cutoff=1, common=[], name='fftcovGP'):
+def makegp_fftcov(psr, prior, components, T=None, timeinterpbasis=timeinterpbasis, oversample=3, cutoff=1, common=[], name='fftcovGP'):
     if T is None:
         T = getspan(psr)
 
     return makegp_fourier(psr, psd2cov(prior, components, T, oversample, cutoff),
                           components, T=T, fourierbasis=timeinterpbasis, common=common, name=name)
 
-def makecommongp_fftcov(psrs, prior, components, T, oversample=3, cutoff=1, common=[], vector=False, name='fftcovCommonGP'):
+def makecommongp_fftcov(psrs, prior, components, T, timeinterpbasis=timeinterpbasis, oversample=3, cutoff=1, common=[], vector=False, name='fftcovCommonGP'):
     return makecommongp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff),
                                 components, T, fourierbasis=timeinterpbasis, common=common, vector=vector, name=name)
 
-def makeglobalgp_fftcov(psrs, prior, orf, components, T, oversample=3, cutoff=1, name='fftcovGlobalGP'):
+def makeglobalgp_fftcov(psrs, prior, orf, components, T, timeinterpbasis=timeinterpbasis, oversample=3, cutoff=1, name='fftcovGlobalGP'):
     return makegp_fourier_global(psrs, psd2cov(prior, components, T, oversample, cutoff), orf,
                                  components, T, fourierbasis=timeinterpbasis, name=name)
 

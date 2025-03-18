@@ -668,6 +668,7 @@ class ShermanMorrisonKernel_novar(ConstantKernel):
         # Sigma = (N + F P Ft)
         # Sigma^-1 = Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm
         #
+        # returns
         # yt Sigma^-1 y = yt Nm y - (yt Nm F) C^-1 (Ft Nm y)
         # Tt Sigma^-1 y = Tt Nm y - Tt Nm F C^-1 (Ft Nm y)
         # Tt Sigma^-1 T = Tt Nm T - (Tt Nm F) C^-1 (Ft Nm T)
