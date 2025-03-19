@@ -202,7 +202,7 @@ def makelogtransform_classic(func, priordict={}):
     return transformed
 
 
-def sample_uniform(params, priordict={}, n=1):
+def sample_uniform(params, priordict={}, n=1, fail=True):
     priordict = {**priordict_standard, **priordict}
 
     sample = {}
@@ -219,6 +219,7 @@ def sample_uniform(params, priordict={}, n=1):
                     sample[par] = np.random.uniform(*range) if n == 1 else np.random.uniform(*range, size=n)
                 break
         else:
-            raise KeyError(f"No known prior for {par}.")
+            if fail:
+                raise KeyError(f"No known prior for {par}.")
 
     return sample

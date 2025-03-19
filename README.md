@@ -48,7 +48,7 @@ _Discovery_ uses lightweight `Pulsar` objects saved as Arrow Feather files. To c
 
 ## Delays (`signals.py`)
 
-- `makedelay(psr, delayfunc, [common, name])`: returns a JAX-ready function that implements a deterministic delay for `psr`. Here `delayfunc` must be a JAX-ready function with signature `delayfunc(arg1, ...)`. The resulting delay parameters are named `{psrname}_{name}_{argX}`, unless they are included in the list `common`.
+- `makedelay(psr, delayfunc, [common, name])`: returns a JAX-ready function that implements a deterministic delay for `psr`. Here `delayfunc` must be a JAX-ready function with signature `delayfunc(arg1, ...)`. The resulting delay parameters are named `{psrname}_{name}_{argX}`, unless they are included in the list `common`. If the first few arguments are defined attributes of `psr` (e.g., `toas` or `freqs`), they are automatically passed to the function and excluded from `params`; however they must come before all the other variable parameters.
 - `make_solardm(psr)` [in `solar.py`]: calculates the DM delay in a 1/r^2 solar wind density model. Returns a function with signature `solardm(n_earth)`.
 - `make_chromaticdecay(psr)` [in `solar.py`]: calculates a chromatic exponential-dip delay. Returns a function with signature `decay(t0, log10_Amp, log10_tau, idx)`.
 

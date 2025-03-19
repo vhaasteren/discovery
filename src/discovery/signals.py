@@ -668,27 +668,15 @@ def dipole_orf(pos1, pos2):
         return np.dot(pos1, pos2)
 
 
-# delay - not completed implemented
-
 def makedelay(psr, delay, common=[], name='delay'):
     argspec = inspect.getfullargspec(delay)
     argmap = [(arg if arg in common else f'{name}_{arg}' if f'{name}_{arg}' in common else f'{psr.name}_{name}_{arg}')
-              for arg in argspec.args]
+              for arg in argspec.args if not hasattr(psr, arg)]
+
+    psrpars = {arg: matrix.jnparray(getattr(psr, arg)) for arg in argspec.args if hasattr(psr, arg)}
 
     def delayfunc(params):
-        return delay(*[params[arg] for arg in argmap])
-    delayfunc.params = argmap
-
-    return delayfunc
-
-# standard parameters t, pos, d;
-def makedelay_deterministic(psr, delay, name='deterministic'):
-    argspec = inspect.getfullargspec(prior)
-    argmap = [f'{name}_{arg}' + (f'({components})' if argspec.annotations.get(arg) == typing.Sequence else '')
-              for arg in argspec.args if arg not in ['t', 'pos', 'd']]
-
-    def delayfunc(params):
-        return delay(t, pos, d, *[params[arg] for arg in argmap])
+        return delay(*psrpars.values(), *[params[arg] for arg in argmap])
     delayfunc.params = argmap
 
     return delayfunc

@@ -79,14 +79,8 @@ class PulsarLikelihood:
         else:
             vsm = csm
 
-        # if pgps:
-        #     if len(pgps) > 1:
-        #         raise NotImplementedError("Cannot concatenate ComponentGPs yet.")
-        #     else:
-        #         vsm = matrix.ComponentKernel(vsm, pgps[0].F, pgps[0].Phi, pgps[0].cfunc)
-
         if len(delay) > 0:
-            delay = matrix.CompoundDelay(delay)
+            y = matrix.CompoundDelay(y, delay)
 
         self.y, self.delay, self.N = y, delay, vsm
 
@@ -164,14 +158,11 @@ class PulsarLikelihood:
 
     @functools.cached_property
     def logL(self):
-        if self.delay:
-            return self.N.make_kernel(self.y, self.delay)
-        else:
-            return self.N.make_kernelproduct(self.y)
+        return self.N.make_kernelproduct(self.y)
 
     @functools.cached_property
     def sample(self):
-        if self.delay:
+        if callable(self.y):
             raise NotImplementedError('No PulsarLikelihood.sample with delays so far.')
         else:
             return self.N.make_sample()
@@ -259,6 +250,7 @@ class GlobalLikelihood:
         else:
             P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
             kterms = [psl.N.make_kernelterms(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
+
             if len(kterms) == 0:
                 raise ValueError('No PulsarLikelihoods in GlobalLikelihood: ' +
                     'if you provided them using a generator, it may have been consumed already. ' +
