@@ -438,7 +438,7 @@ def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourier
             # and phidiag is an (m x n)-matrix; here n is the number of pixels and m of Fourier components
             return jnp.block([[jnp.make2d(jnp.dot(phi, val)) for val in row] for row in orfmat])
         priorfunc.params = argmap
-        priorfunc.type = getattr(prior, 'type', None)
+        priorfunc.type = jax.Array
 
         # if we're not in the pixel-basis case we can take a shortcut in making the inverse
         if orfmat.ndim == 2:
@@ -456,7 +456,7 @@ def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourier
                         phi.shape[0] * orflogdet + orfmat.shape[0] * logdetphi)
                         # was -orfmat.shape[0] * jnp.sum(jnp.log(invphidiag)))
             invprior.params = argmap
-            invprior.type = getattr(prior, 'type', None)
+            invprior.type = jax.Array
         else:
             invprior = None
     else:
@@ -466,7 +466,7 @@ def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourier
             return sum(jnp.block([[jnp.make2d(val * phi) for val in row] for row in orfmat])
                        for phi, orfmat in zip(phis, orfmats))
         priorfunc.params = sorted(set.union(*[set(argmap) for argmap in argmaps]))
-        priorfunc.type = getattr(prior, 'type', None)
+        priorfunc.type = jax.Array
 
         invprior = None
 
@@ -570,8 +570,8 @@ def makecommongp_fftcov(psrs, prior, components, T, timeinterpbasis=timeinterpba
                                 components, T, fourierbasis=timeinterpbasis, common=common, vector=vector, name=name)
 
 def makeglobalgp_fftcov(psrs, prior, orf, components, T, timeinterpbasis=timeinterpbasis, oversample=3, cutoff=1, name='fftcovGlobalGP'):
-    return makegp_fourier_global(psrs, psd2cov(prior, components, T, oversample, cutoff), orf,
-                                 components, T, fourierbasis=timeinterpbasis, name=name)
+    return makeglobalgp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff), orf,
+                                components, T, fourierbasis=timeinterpbasis, name=name)
 
 
 # single powerlaws
