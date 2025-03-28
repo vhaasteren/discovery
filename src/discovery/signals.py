@@ -491,7 +491,7 @@ def epochavgbasis(psr, components, T=None, dt=1.0):
 
     return t_avg, None, Umat
 
-def cov2avg(covfunc):
+def cov2cov(covfunc):
     argspec = inspect.getfullargspec(covfunc)
     arglist = argspec.args
 
@@ -511,15 +511,15 @@ def cov2avg(covfunc):
 
 def makegp_avgcov(psr, prior, epochavgbasis=epochavgbasis, common=[], name='avgcovGP'):
     # assume prior(t1, t2, *args) or prior(tau, *args) returns a covariance matrix
-    return makegp_fourier(psr, cov2avg(prior), components=0, T=1.0, fourierbasis=epochavgbasis,
+    return makegp_fourier(psr, cov2cov(prior), components=0, T=1.0, fourierbasis=epochavgbasis,
                           common=common, exclude=['t1', 't2', 'tau'], name=name)
 
 def makecommongp_avgcov(psrs, prior, epochavgbasis=epochavgbasis, common=[], vector=False, name='avgcovCommonGP'):
-    return makecommongp_fourier(psr, cov2avg(prior), components=0, T=1.0, fourierbasis=epochavgbasis,
+    return makecommongp_fourier(psr, cov2cov(prior), components=0, T=1.0, fourierbasis=epochavgbasis,
                                 common=common, exclude=['t1', 't2', 'tau'], name=name)
 
 def makeglobalgp_avgcov(psrs, prior, epochavgbasis=epochavgbasis, common=[], vector=False, name='avgcovCommonGP'):
-    return makeglobalgp_fourier(psr, cov2avg(prior), components=0, T=1.0, fourierbasis=epochavgbasis,
+    return makeglobalgp_fourier(psr, cov2cov(prior), components=0, T=1.0, fourierbasis=epochavgbasis,
                                 exclude=['t1', 't2', 'tau'], name=name)
 
 
@@ -601,9 +601,7 @@ def psd2cov(psdfunc, components, T, oversample=3, cutoff=1):
     return covmat
 
 def makegp_fftcov(psr, prior, components, T=None, timeinterpbasis=timeinterpbasis, oversample=3, cutoff=1, common=[], name='fftcovGP'):
-    if T is None:
-        T = getspan(psr)
-
+    T = getspan(psr) if T is None else T
     return makegp_fourier(psr, psd2cov(prior, components, T, oversample, cutoff),
                           components, T=T, fourierbasis=timeinterpbasis, common=common, name=name)
 
@@ -614,6 +612,22 @@ def makecommongp_fftcov(psrs, prior, components, T, timeinterpbasis=timeinterpba
 def makeglobalgp_fftcov(psrs, prior, orf, components, T, timeinterpbasis=timeinterpbasis, oversample=3, cutoff=1, name='fftcovGlobalGP'):
     return makeglobalgp_fourier(psrs, psd2cov(prior, components, T, oversample, cutoff), orf,
                                 components, T, fourierbasis=timeinterpbasis, name=name)
+
+
+# time-interpolated covariance matrix from time-domain
+
+def makegp_intcov(psr, prior, components, T=None, timeinterpbasis=timeinterpbasis, common=[], name='intcovGP'):
+    T = getspan(psr) if T is None else T
+    return makegp_fourier(psr, cov2cov(prior),
+                          components, T, fourierbasis=timeinterpbasis, common=common, exclude=['t1', 't2', 'tau'], name=name)
+
+def makecommongp_intcov(psr, prior, components, T, timeinterpbasis=timeinterpbasis, common=[], name='intcovCommonGP'):
+    return makecommongp_fourier(psr, cov2cov(prior),
+                                components, T, fourierbasis=timeinterpbasis, common=common, exclude=['t1', 't2', 'tau'], name=name)
+
+def makeglobalgp_intcov(psr, prior, orf, components, T, timeinterpbasis=timeinterpbasis, common=[], name='intcovGlobalGP'):
+    return makeglobalgp_fourier(psr, cov2cov(prior), orf,
+                                components, T, fourierbasis=timeinterpbasis, exclude=['t1', 't2', 'tau'], name=name)
 
 
 # single powerlaws
