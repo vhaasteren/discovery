@@ -5,7 +5,6 @@ import inspect
 import numpy as np
 import scipy as sp
 
-# Conditional imports
 try:
     import jax
     import jax.numpy as jnp
@@ -50,12 +49,11 @@ def backend_diag_indices(n, ndim=2):
     if backend == 'jax':
         return jnp.diag_indices(n, ndim=ndim)
     elif backend == 'mlx':
-        # MLX implementation
         if ndim == 2:
             return (mx.arange(n), mx.arange(n))
         else:
             return tuple(mx.arange(n) for _ in range(ndim))
-    else:  # numpy
+    else:
         return np.diag_indices(n, ndim=ndim)
 
 
@@ -89,9 +87,7 @@ def _convert_to_backend_array(x, backend):
         if isinstance(x, mx.array):
             return x
         elif isinstance(x, (list, tuple)):
-            # Handle lists/tuples of arrays
             if all(isinstance(e, (np.ndarray, mx.array)) for e in x):
-                # Convert each element then stack
                 converted = [_convert_to_backend_array(e, backend) for e in x]
                 return mx.stack(converted)
             else:
@@ -108,13 +104,11 @@ def _convert_to_backend_array(x, backend):
 def _wrap_array_func(func):
     """Decorator to automatically convert inputs to backend arrays"""
     def wrapped(*args, **kwargs):
-        # Get current backend
         backend = globals().get('_current_backend', 'numpy')
-        
-        # Convert args
+
         converted_args = [_convert_to_backend_array(arg, backend) for arg in args]
         converted_kwargs = {k: _convert_to_backend_array(v, backend) for k, v in kwargs.items()}
-        
+
         return func(*converted_args, **converted_kwargs)
     return wrapped
 
@@ -122,27 +116,22 @@ def backend_vmap(func, in_axes=0):
     """Backend-agnostic vectorization wrapper"""
     # TODO: This can probably be optimized a lot for MLX
     backend = globals().get('_current_backend', 'numpy')
-    
+
     if backend == 'jax':
         return jax.vmap(func, in_axes=in_axes)
     elif backend == 'mlx':
-        # MLX doesn't have vmap, so we implement a simple version
         def mlx_vmapped(*args):
-            # Convert in_axes to list if it's an int
             if isinstance(in_axes, int):
                 axis_flags = [in_axes] * len(args)
             else:
                 axis_flags = in_axes
-            
-            # Find the vectorized dimension
+
             vec_dims = [i for i, ax in enumerate(axis_flags) if ax is not None]
             if not vec_dims:
                 return func(*args)
-                
-            # Get batch size from first vectorized argument
+
             batch_size = args[vec_dims[0]].shape[axis_flags[vec_dims[0]]]
-            
-            # Process each element in batch
+
             results = []
             for i in range(batch_size):
                 batch_args = []
@@ -154,9 +143,8 @@ def backend_vmap(func, in_axes=0):
                 results.append(func(*batch_args))
             return mx.stack(results)
         return mlx_vmapped
-    else:  # numpy
+    else:
         def numpy_vmapped(*args):
-            # Simple numpy implementation using broadcasting
             return np.vectorize(func, signature='()->()')(*args)
         return numpy_vmapped
 
@@ -200,10 +188,10 @@ def config(**kwargs):
 
         partial = jax.tree_util.Partial
     elif backend == 'mlx' and MLX_AVAILABLE:
-        jnp, jsp = mx, mx  # MLX combines core and linalg operations
+        jnp, jsp = mx, mx
 
         mx.diag = _wrap_array_func(mx.diag)
-        
+
         def mlx_jnparray(a):
             if isinstance(a, (list, tuple)) and any(isinstance(x, np.ndarray) for x in a):
                 return mx.stack([_convert_to_backend_array(x, backend) for x in a])
@@ -213,12 +201,11 @@ def config(**kwargs):
         jnp.diag_indices = backend_diag_indices
         jnpzeros = lambda a: mx.zeros(a, dtype=mx.float32)
         intarray = lambda a: mx.array(a, dtype=mx.int64)
-        
+
         jnpkey    = lambda seed: mx_random.key(seed)
         jnpsplit  = mx_random.split
         jnpnormal = mx_random.normal
-        
-        # Add MLX-specific implementations
+
         jsp.linalg.block_diag = mlx_block_diag
         partial = functools.partial
     else:
