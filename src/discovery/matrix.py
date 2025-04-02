@@ -5,22 +5,175 @@ import inspect
 import numpy as np
 import scipy as sp
 
-import jax
-import jax.numpy
-import jax.scipy
-import jax.tree_util
+# Conditional imports
+try:
+    import jax
+    import jax.numpy as jnp
+    import jax.scipy as jsp
+    import jax.tree_util
+    JAX_AVAILABLE = True
+except ImportError:
+    JAX_AVAILABLE = False
+
+try:
+    import mlx.core as mx
+    import mlx.nn as mx_nn
+    import mlx.core.random as mx_random
+    MLX_AVAILABLE = True
+except ImportError:
+    MLX_AVAILABLE = False
+
+def mlx_block_diag(*arrs):
+    """Create a block diagonal matrix from provided arrays for MLX backend."""
+    if not arrs:
+        return mx.array([])
+    
+    shapes = [a.shape for a in arrs]
+    out_shape = (sum(s[0] for s in shapes), sum(s[1] for s in shapes))
+    
+    out = mx.zeros(out_shape, dtype=arrs[0].dtype)
+    r, c = 0, 0
+    
+    for arr in arrs:
+        nr, nc = arr.shape
+        out[r:r+nr, c:c+nc] = arr
+        r += nr
+        c += nc
+    
+    return out
+
+
+def backend_diag_indices(n, ndim=2):
+    """Backend-agnostic diagonal indices generator"""
+    backend = globals().get('_current_backend', 'numpy')
+    
+    if backend == 'jax':
+        return jnp.diag_indices(n, ndim=ndim)
+    elif backend == 'mlx':
+        # MLX implementation
+        if ndim == 2:
+            return (mx.arange(n), mx.arange(n))
+        else:
+            return tuple(mx.arange(n) for _ in range(ndim))
+    else:  # numpy
+        return np.diag_indices(n, ndim=ndim)
+
+
+def _convert_to_backend_array_old(x, backend):
+    """Convert input to backend's array type"""
+    if backend == 'numpy':
+        return np.asarray(x)
+    elif backend == 'jax':
+        return jnp.asarray(x)
+    elif backend == 'mlx':
+        if isinstance(x, (np.ndarray, list, tuple)):
+            return mx.array(x)
+        elif isinstance(x, mx.array):
+            return x
+        else:
+            return mx.array(x)
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+
+def _convert_to_backend_array(x, backend):
+    """Recursively convert input to backend's array type, handling nested structures"""
+    if x is None:
+        return None
+        
+    if backend == 'numpy':
+        return np.asarray(x)
+    elif backend == 'jax':
+        return jnp.asarray(x)
+    elif backend == 'mlx':
+        if isinstance(x, mx.array):
+            return x
+        elif isinstance(x, (list, tuple)):
+            # Handle lists/tuples of arrays
+            if all(isinstance(e, (np.ndarray, mx.array)) for e in x):
+                # Convert each element then stack
+                converted = [_convert_to_backend_array(e, backend) for e in x]
+                return mx.stack(converted)
+            else:
+                return mx.array(x)
+        elif isinstance(x, np.ndarray):
+            return mx.array(x.tolist()) if x.dtype.kind in 'fiu' else mx.array(x)
+        else:
+            try:
+                return mx.array(x)
+            except:
+                raise TypeError(f"Cannot convert {type(x)} to MLX array")
+    raise ValueError(f"Unknown backend: {backend}")
+
+def _wrap_array_func(func):
+    """Decorator to automatically convert inputs to backend arrays"""
+    def wrapped(*args, **kwargs):
+        # Get current backend
+        backend = globals().get('_current_backend', 'numpy')
+        
+        # Convert args
+        converted_args = [_convert_to_backend_array(arg, backend) for arg in args]
+        converted_kwargs = {k: _convert_to_backend_array(v, backend) for k, v in kwargs.items()}
+        
+        return func(*converted_args, **converted_kwargs)
+    return wrapped
+
+def backend_vmap(func, in_axes=0):
+    """Backend-agnostic vectorization wrapper"""
+    # TODO: This can probably be optimized a lot for MLX
+    backend = globals().get('_current_backend', 'numpy')
+    
+    if backend == 'jax':
+        return jax.vmap(func, in_axes=in_axes)
+    elif backend == 'mlx':
+        # MLX doesn't have vmap, so we implement a simple version
+        def mlx_vmapped(*args):
+            # Convert in_axes to list if it's an int
+            if isinstance(in_axes, int):
+                axis_flags = [in_axes] * len(args)
+            else:
+                axis_flags = in_axes
+            
+            # Find the vectorized dimension
+            vec_dims = [i for i, ax in enumerate(axis_flags) if ax is not None]
+            if not vec_dims:
+                return func(*args)
+                
+            # Get batch size from first vectorized argument
+            batch_size = args[vec_dims[0]].shape[axis_flags[vec_dims[0]]]
+            
+            # Process each element in batch
+            results = []
+            for i in range(batch_size):
+                batch_args = []
+                for arg, ax in zip(args, axis_flags):
+                    if ax is None:
+                        batch_args.append(arg)
+                    else:
+                        batch_args.append(mx.take(arg, mx.array([i]), axis=ax))
+                results.append(func(*batch_args))
+            return mx.stack(results)
+        return mlx_vmapped
+    else:  # numpy
+        def numpy_vmapped(*args):
+            # Simple numpy implementation using broadcasting
+            return np.vectorize(func, signature='()->()')(*args)
+        return numpy_vmapped
 
 def config(**kwargs):
     global jnp, jsp, jnparray, jnpzeros, intarray, jnpkey, jnpsplit, jnpnormal
-    global matrix_factor, matrix_solve, matrix_norm, partial
+    global matrix_factor, matrix_solve, matrix_norm, partial, _current_backend
 
     np.logdet = lambda a: np.sum(np.log(np.abs(a)))
-    jax.numpy.logdet = lambda a: jax.numpy.sum(jax.numpy.log(jax.numpy.abs(a)))
+    if JAX_AVAILABLE:
+        jax.numpy.logdet = lambda a: jax.numpy.sum(jax.numpy.log(jax.numpy.abs(a)))
 
     np.make2d = lambda a: a if a.ndim == 2 else np.diag(a)
-    jax.numpy.make2d = lambda a: a if a.ndim == 2 else jax.numpy.diag(a)
+    if JAX_AVAILABLE:
+        jax.numpy.make2d = lambda a: a if a.ndim == 2 else jax.numpy.diag(a)
 
     backend = kwargs.get('backend')
+    _current_backend = backend
 
     if backend == 'numpy':
         jnp, jsp = np, sp
@@ -34,7 +187,7 @@ def config(**kwargs):
         jnpnormal = lambda gen, shape: gen.normal(size=shape)
 
         partial = functools.partial
-    elif backend == 'jax':
+    elif backend == 'jax' and JAX_AVAILABLE:
         jnp, jsp = jax.numpy, jax.scipy
 
         jnparray = lambda a: jnp.array(a, dtype=jnp.float64 if jax.config.x64_enabled else jnp.float32)
@@ -46,17 +199,48 @@ def config(**kwargs):
         jnpnormal = jax.random.normal
 
         partial = jax.tree_util.Partial
+    elif backend == 'mlx' and MLX_AVAILABLE:
+        jnp, jsp = mx, mx  # MLX combines core and linalg operations
+
+        mx.diag = _wrap_array_func(mx.diag)
+        
+        def mlx_jnparray(a):
+            if isinstance(a, (list, tuple)) and any(isinstance(x, np.ndarray) for x in a):
+                return mx.stack([_convert_to_backend_array(x, backend) for x in a])
+            return _convert_to_backend_array(a, backend)
+
+        jnparray = mlx_jnparray
+        jnp.diag_indices = backend_diag_indices
+        jnpzeros = lambda a: mx.zeros(a, dtype=mx.float32)
+        intarray = lambda a: mx.array(a, dtype=mx.int64)
+        
+        jnpkey    = lambda seed: mx_random.key(seed)
+        jnpsplit  = mx_random.split
+        jnpnormal = mx_random.normal
+        
+        # Add MLX-specific implementations
+        jsp.linalg.block_diag = mlx_block_diag
+        partial = functools.partial
+    else:
+        raise ValueError(f"Backend {backend} not available or not supported")
 
     factor = kwargs.get('factor')
 
     if factor == 'cholesky':
-        matrix_factor = jsp.linalg.cho_factor
-        matrix_solve  = jsp.linalg.cho_solve
-        matrix_norm   = 2.0
+        if backend == 'mlx':
+            matrix_factor = lambda a: (mx.linalg.cholesky(a), False)
+            matrix_solve = lambda cf, b: mx.linalg.cholesky_solve(cf[0], b)
+        else:
+            matrix_factor = jsp.linalg.cho_factor
+            matrix_solve = jsp.linalg.cho_solve
+        matrix_norm = 2.0
     elif factor == 'lu':
-        matrix_factor = jsp.linalg.lu_factor
-        matrix_solve  = jsp.linalg.lu_solve
-        matrix_norm   = 1.0
+        if backend == 'mlx':
+            raise NotImplementedError("LU factorization not yet implemented in MLX")
+        else:
+            matrix_factor = jsp.linalg.lu_factor
+            matrix_solve = jsp.linalg.lu_solve
+        matrix_norm = 1.0
 
 config(backend='jax', factor='cholesky')
 

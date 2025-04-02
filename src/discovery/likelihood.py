@@ -129,8 +129,10 @@ class PulsarLikelihood:
             def cond(params):
                 Pinv, _ = P_var_inv(params)
                 Sm = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv) + FtNmF
-                cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
-                mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+                #cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
+                #mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+                cf = matrix.matrix_factor(Sm)
+                mu = matrix.matrix_solve(cf, FtNmy)
 
                 return mu, cf
 
@@ -140,8 +142,10 @@ class PulsarLikelihood:
                 FtNmy, FtNmF = ksolve(params)
                 Pinv, _ = P_var_inv(params)
                 Sm = (matrix.jnp.diag(Pinv) if Pinv.ndim == 1 else Pinv) + FtNmF
-                cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
-                mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+                #cf = matrix.jsp.linalg.cho_factor(Sm, lower=True)
+                #mu = matrix.jsp.linalg.cho_solve(cf, FtNmy)
+                cf = matrix.matrix_factor(Sm)
+                mu = matrix.matrix_solve(cf, FtNmy)
 
                 return mu, cf
 

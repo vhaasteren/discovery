@@ -11,6 +11,16 @@ import jax
 import jax.numpy as jnp
 
 from . import matrix
+
+try:
+    import mlx.core as mx
+    import mlx.nn as mx_nn
+    import mlx.core.random as mx_random
+    MLX_AVAILABLE = True
+except ImportError:
+    MLX_AVAILABLE = False
+
+from . import matrix
 from . import const
 
 
@@ -325,7 +335,7 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
     f, df = fs[0], dfs[0]
 
     if vector:
-        vprior = jax.vmap(prior, in_axes=[None, None] +
+        vprior = matrix.backend_vmap(prior, in_axes=[None, None] +
                                          [0 if f'({len(psrs)})' in arg else None for arg in argmap])
 
         def priorfunc(params):
@@ -334,7 +344,7 @@ def makecommongp_fourier(psrs, prior, components, T, fourierbasis=fourierbasis, 
         priorfunc.params = sorted(argmap)
         priorfunc.type = getattr(prior, 'type', None)
     else:
-        vprior = jax.vmap(prior, in_axes=[None, None] +
+        vprior = matrix.backend_vmap(prior, in_axes=[None, None] +
                                          [0 if isinstance(argmap, list) else None for argmap in argmaps])
 
         def priorfunc(params):
@@ -656,7 +666,7 @@ def makepowerlaw_crn(components, crn_gamma='variable'):
             phi = phi.at[:2*components].add((10.0**(2.0 * crn_log10_A)) / 12.0 / jnp.pi**2 *
                                             const.fyr ** (crn_gamma - 3.0) * f[:2*components] ** (-crn_gamma) * df[:2*components])
             return phi
-    elif matrix.jnp == np:
+    elif matrix.jnp == np or matrix.jnp == mx:
         def powerlaw_crn(f, df, log10_A, gamma, crn_log10_A, crn_gamma):
             phi = (10.0**(2.0 * log10_A)) / 12.0 / np.pi**2 * const.fyr ** (gamma - 3.0) * f ** (-gamma) * df
             phi[:2*components] += ((10.0**(2.0 * crn_log10_A)) / 12.0 / np.pi**2 *
