@@ -23,29 +23,27 @@ except ImportError:
     MLX_AVAILABLE = False
 
 def mlx_block_diag(*arrs):
-    """Create a block diagonal matrix from provided arrays for MLX backend."""
     if not arrs:
         return mx.array([])
-    
+
     shapes = [a.shape for a in arrs]
     out_shape = (sum(s[0] for s in shapes), sum(s[1] for s in shapes))
-    
+
     out = mx.zeros(out_shape, dtype=arrs[0].dtype)
     r, c = 0, 0
-    
+
     for arr in arrs:
         nr, nc = arr.shape
         out[r:r+nr, c:c+nc] = arr
         r += nr
         c += nc
-    
+
     return out
 
 
 def backend_diag_indices(n, ndim=2):
-    """Backend-agnostic diagonal indices generator"""
     backend = globals().get('_current_backend', 'numpy')
-    
+
     if backend == 'jax':
         return jnp.diag_indices(n, ndim=ndim)
     elif backend == 'mlx':
@@ -57,28 +55,10 @@ def backend_diag_indices(n, ndim=2):
         return np.diag_indices(n, ndim=ndim)
 
 
-def _convert_to_backend_array_old(x, backend):
-    """Convert input to backend's array type"""
-    if backend == 'numpy':
-        return np.asarray(x)
-    elif backend == 'jax':
-        return jnp.asarray(x)
-    elif backend == 'mlx':
-        if isinstance(x, (np.ndarray, list, tuple)):
-            return mx.array(x)
-        elif isinstance(x, mx.array):
-            return x
-        else:
-            return mx.array(x)
-    else:
-        raise ValueError(f"Unknown backend: {backend}")
-
-
 def _convert_to_backend_array(x, backend):
-    """Recursively convert input to backend's array type, handling nested structures"""
     if x is None:
         return None
-        
+
     if backend == 'numpy':
         return np.asarray(x)
     elif backend == 'jax':
@@ -102,7 +82,6 @@ def _convert_to_backend_array(x, backend):
     raise ValueError(f"Unknown backend: {backend}")
 
 def _wrap_array_func(func):
-    """Decorator to automatically convert inputs to backend arrays"""
     def wrapped(*args, **kwargs):
         backend = globals().get('_current_backend', 'numpy')
 
@@ -113,7 +92,6 @@ def _wrap_array_func(func):
     return wrapped
 
 def backend_vmap(func, in_axes=0):
-    """Backend-agnostic vectorization wrapper"""
     # TODO: This can probably be optimized a lot for MLX
     backend = globals().get('_current_backend', 'numpy')
 
