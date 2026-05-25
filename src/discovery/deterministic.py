@@ -284,7 +284,7 @@ def chromatic_exponential(psr, fref=1400.0):
     r"""
     Factory function for chromatic exponential delay model.
 
-    Creates a delay function that models chromatic exponential events (e.g., glitches,
+    Creates a delay function that models chromatic exponential events (e.g., profile
     state changes) with frequency-dependent amplitude scaling.
 
     Parameters
@@ -345,7 +345,7 @@ def chromatic_annual(psr, fref=1400.0):
     Factory function for chromatic annual delay model.
 
     Creates a delay function that models chromatic annual sinusoidal variations
-    (e.g., annual DM variations) with frequency-dependent amplitude scaling.
+    (e.g., annual DM or scattering variations) with frequency-dependent amplitude scaling.
 
     Parameters
     ----------
@@ -401,7 +401,7 @@ def chromatic_gaussian(psr, fref=1400.0):
     Factory function for chromatic Gaussian delay model.
 
     Creates a delay function that models chromatic Gaussian events (e.g., transient
-    DM variations, localized events) with frequency-dependent amplitude scaling.
+    DM variations, localized profile events) with frequency-dependent amplitude scaling.
 
     Parameters
     ----------
