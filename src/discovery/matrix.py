@@ -471,7 +471,15 @@ def SM_2d_fused(Y, N, F, P):
 # indexed, carefully handwritten
 
 def make_uind(U):
-    Uind = np.zeros((U.shape[1], jnp.max(jnp.sum(U, axis=0)) + 1), 'i')
+    U = np.asarray(U)
+
+    # No epochs (e.g. an ECORR selection that matches no TOAs): return an
+    # empty index table instead of taking the max of an empty array.
+    if U.shape[1] == 0:
+        return np.zeros((0, 1), 'i')
+
+    maxcount = int(np.max(np.sum(U, axis=0)))
+    Uind = np.zeros((U.shape[1], maxcount + 1), 'i')
 
     for i in range(U.shape[1]):
         ind = np.where(U[:,i])[0]
