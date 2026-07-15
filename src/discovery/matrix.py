@@ -906,12 +906,16 @@ class WoodburyKernel_novar(ConstantKernel):
     def make_kernelproduct(self, y):
         if callable(y):
             y_var, N_solve_1d = y, self.N.make_solve_1d()
-            NmF, cf, ld = jnparray(self.NmF), (jnparray(self.cf[0]), self.cf[1]), self.ld
+            # Keep pure JAX leaves in the closure: recent JAX cho_solve rejects
+            # numpy.ndarray chol factors as non-hashable static args.
+            NmF = jnparray(self.NmF)
+            cf = (jnparray(self.cf[0]), bool(self.cf[1]))
+            ld = jnp.array(self.ld)
 
             def kernelproduct(params):
                 yp = y_var(params)
 
-                Nmy = N_solve_1d(yp)[0] - self.NmF @ jsp.linalg.cho_solve(cf, NmF.T @ yp)
+                Nmy = N_solve_1d(yp)[0] - NmF @ jsp.linalg.cho_solve(cf, NmF.T @ yp)
 
                 return -0.5 * yp @ Nmy - 0.5 * ld
             kernelproduct.params = sorted(set(y.params))
@@ -976,7 +980,7 @@ class WoodburyKernel_novar(ConstantKernel):
         if callable(T):
             Nmy, Nmf = jnparray(Nmy), jnparray(NmF)
             N_solve_2d = self.N.make_solve_2d()
-            cf = (jnparray(self.cf[0]), self.cf[1])
+            cf = (jnparray(self.cf[0]), bool(self.cf[1]))
             F, FtNmy, FtNmF = jnparray(self.F), jnparray(FtNmy), jnparray(FtNmF)
 
             def kernelsolve(params):
@@ -1020,7 +1024,7 @@ class WoodburyKernel_novar(ConstantKernel):
     def make_solve_1d(self):
         N_solve_1d = self.N.make_solve_1d()
         NmF = jnparray(self.NmF)
-        cf = (jnparray(self.cf[0]), self.cf[1])
+        cf = (jnparray(self.cf[0]), bool(self.cf[1]))
         ld = jnp.array(self.ld)
 
         # closes on N_solve_1d, NmF, cf, ld
@@ -1035,11 +1039,11 @@ class WoodburyKernel_novar(ConstantKernel):
     def make_solve_2d(self):
         N_solve_2d = self.N.make_solve_2d()
         NmF = jnparray(self.NmF)
-        cf = (jnparray(self.cf[0]), self.cf[1])
+        cf = (jnparray(self.cf[0]), bool(self.cf[1]))
         ld = jnp.array(self.ld)
 
         def solve_2d(F):
-            return N_solve_2d(F)[0] - NmF @ jsp.linalg.cho_solve(cf, NmF.T @ F), self.ld
+            return N_solve_2d(F)[0] - NmF @ jsp.linalg.cho_solve(cf, NmF.T @ F), ld
 
         return solve_2d
 
