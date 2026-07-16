@@ -41,13 +41,30 @@ def makemodel(mylogl, priordict={}):
 
 
 def makesampler_nuts(numpyro_model, num_warmup=512, num_samples=1024, num_chains=1, **kwargs):
-    nutsargs = dict(max_tree_depth=8, dense_mass=False,
-                    forward_mode_differentiation=False, target_accept_prob=0.8,
-                    **{arg: val for arg in kwargs.items() if arg in inspect.getfullargspec(infer.NUTS).args})
+    nuts_argnames = set(inspect.signature(infer.NUTS).parameters) - {"model"}
+    mcmc_argnames = set(inspect.signature(infer.MCMC).parameters) - {"sampler"}
 
-    mcmcargs = dict(num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains,
-                    chain_method='vectorized', progress_bar=True,
-                    **{arg: val for arg in kwargs.items() if arg in inspect.getfullargspec(infer.MCMC).kwonlyargs})
+    unknown = set(kwargs) - nuts_argnames - mcmc_argnames
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise TypeError(f"makesampler_nuts() got unexpected keyword argument(s): {names}")
+
+    nutsargs = {
+        "max_tree_depth": 8,
+        "dense_mass": False,
+        "forward_mode_differentiation": False,
+        "target_accept_prob": 0.8,
+    }
+    nutsargs.update({name: value for name, value in kwargs.items() if name in nuts_argnames})
+
+    mcmcargs = {
+        "num_warmup": num_warmup,
+        "num_samples": num_samples,
+        "num_chains": num_chains,
+        "chain_method": "vectorized",
+        "progress_bar": True,
+    }
+    mcmcargs.update({name: value for name, value in kwargs.items() if name in mcmc_argnames})
 
     sampler = infer.MCMC(infer.NUTS(numpyro_model, **nutsargs), **mcmcargs)
     sampler.to_df = lambda: numpyro_model.to_df(sampler.get_samples())
