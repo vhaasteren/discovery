@@ -1537,6 +1537,35 @@ class WoodburyKernel_varP(VariableKernel):
 
         return kernelsolve
 
+    def make_kernelsolve_simple(self, y):
+        # Conditional mean of GP coefficients for Sigma = N + F P F^T when N is
+        # a bare fixed NoiseMatrix (no marginalized-out T block on the left).
+        # Returns (b_mean, cf) with
+        #   b_mean = (P^-1 + F^T N^-1 F)^-1 F^T N^-1 y
+        #   cf     = cho_factor(P^-1 + F^T N^-1 F, lower=True)
+        # lower=True is required: sample_conditional uses cf[0].T as an upper
+        # triangle (solve_triangular(..., lower=False)). Mirrors
+        # WoodburyKernel_varNP.make_kernelsolve_simple and the non-simple
+        # branches in likelihood.conditional. N is fixed → precompute N^-1 F.
+        F = jnparray(self.F)
+        y = jnparray(y)
+
+        NmF, _ = self.N.solve_2d(self.F)   # ConstantKernel API: no params
+        FtNmF = jnparray(self.F.T @ NmF)
+        FtNmy = jnparray(NmF.T @ y)
+
+        P_var_inv = self.P_var.make_inv()
+
+        def kernelsolve(params):
+            Pinv, _ = P_var_inv(params)
+            # Pinv is 2D (NoiseMatrix1D_var.make_inv returns jnp.diag(...)).
+            cf = jsp.linalg.cho_factor(Pinv + FtNmF, lower=True)
+            b_mean = jsp.linalg.cho_solve(cf, FtNmy)
+            return b_mean, cf
+
+        kernelsolve.params = list(P_var_inv.params)
+        return kernelsolve
+
     def make_kernelproduct_vary(self, y):
         NmF, ldN = self.N.solve_2d(self.F)
         FtNmF = self.F.T @ NmF
