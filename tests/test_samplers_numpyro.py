@@ -116,3 +116,84 @@ def test_makesampler_nuts_defaults_unchanged(recording_infer):
 def test_makesampler_nuts_rejects_unknown_keyword(recording_infer):
     with pytest.raises(TypeError, match="target_accept_probability"):
         ds_numpyro.makesampler_nuts(dummy_model, target_accept_probability=0.91)
+
+
+def test_ensure_sampler_to_df_noop_when_already_present():
+    sampler = RecordingMCMC(RecordingNUTS(dummy_model), num_warmup=1, num_samples=1)
+    sampler.to_df = lambda: "already"
+    ds_numpyro._ensure_sampler_to_df(sampler)
+    assert sampler.to_df() == "already"
+
+
+def test_ensure_sampler_to_df_recovers_from_kernel_model():
+    sampler = RecordingMCMC(RecordingNUTS(dummy_model), num_warmup=1, num_samples=1)
+    assert not hasattr(sampler, "to_df")
+    ds_numpyro._ensure_sampler_to_df(sampler)
+    assert sampler.to_df() == ("dataframe", {"pars": "samples"})
+
+
+def test_ensure_sampler_to_df_raises_without_model_to_df():
+    class BareKernel:
+        pass
+
+    sampler = RecordingMCMC(BareKernel(), num_warmup=1, num_samples=1)
+    with pytest.raises(AttributeError, match="makesampler_nuts"):
+        ds_numpyro._ensure_sampler_to_df(sampler)
+
+
+def test_run_nuts_with_checkpoints_mkdirs_path_and_recovers_to_df(tmp_path, monkeypatch):
+    import pandas as pd
+
+    def model_with_df():
+        pass
+
+    model_with_df.to_df = lambda samples: pd.DataFrame(
+        {"x": [samples["chunk"]]}
+    )
+
+    class FakeSampler:
+        def __init__(self):
+            self.num_samples = 4
+            self.sampler = RecordingNUTS(model_with_df)
+            self.last_state = "state"
+            self.post_warmup_state = None
+            self.runs = 0
+
+        def _set_collection_params(self):
+            pass
+
+        def run(self, rng_key):
+            self.runs += 1
+
+        def get_samples(self):
+            return {"chunk": self.runs}
+
+    saved = {}
+
+    def fake_save_chain(df, path):
+        saved["df"] = df.copy()
+        saved["path"] = path
+
+    monkeypatch.setattr(ds_numpyro, "save_chain", fake_save_chain)
+    monkeypatch.setattr(
+        ds_numpyro.jax.random, "split", lambda key: (key, key)
+    )
+
+    outdir = tmp_path / "nested" / "chains"
+    sampler = FakeSampler()
+    assert not hasattr(sampler, "to_df")
+
+    df = ds_numpyro.run_nuts_with_checkpoints(
+        sampler,
+        num_samples_per_checkpoint=2,
+        rng_key=0,
+        outdir=outdir,
+        resume=False,
+    )
+
+    assert outdir.is_dir()
+    assert callable(sampler.to_df)
+    assert sampler.runs == 2
+    assert saved["path"] == outdir / "numpyro-samples.feather"
+    assert list(df["x"]) == [1, 2]
+    assert (outdir / "numpyro-checkpoint.pickle").is_file()

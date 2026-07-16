@@ -71,6 +71,30 @@ def makesampler_nuts(numpyro_model, num_warmup=512, num_samples=1024, num_chains
 
     return sampler
 
+
+def _ensure_sampler_to_df(sampler):
+    """Attach ``sampler.to_df`` from the underlying model when missing.
+
+    ``makesampler_nuts`` already wires this. For a raw ``numpyro.infer.MCMC``
+    built around a model that defines ``to_df``, recover the same attachment
+    from ``sampler.sampler.model``. Otherwise raise a clear error.
+    """
+    if hasattr(sampler, "to_df") and callable(getattr(sampler, "to_df")):
+        return
+
+    kernel = getattr(sampler, "sampler", None)
+    model = getattr(kernel, "model", None)
+    if model is not None and hasattr(model, "to_df") and callable(model.to_df):
+        sampler.to_df = lambda s=sampler, m=model: m.to_df(s.get_samples())
+        return
+
+    raise AttributeError(
+        "sampler has no to_df; build it with makesampler_nuts(...) "
+        "or use a NumPyro model that defines to_df "
+        "(makesampler_nuts / run_nuts_with_checkpoints will attach it)"
+    )
+
+
 def run_nuts_with_checkpoints(
     sampler,
     num_samples_per_checkpoint,
@@ -82,7 +106,12 @@ def run_nuts_with_checkpoints(
 
     This function performs multiple iterations of MCMC sampling, saving checkpoints
     after each iteration. It saves samples to feather files and the NumPyro MCMC
-    state to JSON.
+    state to a pickle.
+
+    Preferred construction is :func:`makesampler_nuts`, which attaches
+    ``sampler.to_df`` from the model's ``to_df``. If ``sampler.to_df`` is
+    missing but the underlying NUTS kernel's ``.model`` defines ``to_df``,
+    that attachment is recovered automatically.
 
     Parameters
     ----------
@@ -99,8 +128,8 @@ def run_nuts_with_checkpoints(
 
     Returns
     -------
-    None
-        This function doesn't return any value but saves the results to disk.
+    pandas.DataFrame
+        The concatenated sample table written to ``numpyro-samples.feather``.
 
     Side Effects
     ------------
@@ -112,15 +141,14 @@ def run_nuts_with_checkpoints(
     -------
     >>> import discovery.samplers.numpyro as ds_numpyro
     >>> # Assume `model` is configured
-    >>> npsampler = ds_numpyro.makesampler_nuts(model, num_samples =100, num_warmup=50)
+    >>> npsampler = ds_numpyro.makesampler_nuts(model, num_samples=100, num_warmup=50)
     >>> ds_numpyro.run_nuts_with_checkpoints(npsampler, 10, jax.random.key(42))
 
     """
-    # convert to pathlib object
-    # make directory if it doesn't exist
-    if not isinstance(outdir, Path):
-        outdir = Path(outdir)
-        outdir.mkdir(exist_ok=True, parents=True)
+    _ensure_sampler_to_df(sampler)
+
+    outdir = Path(outdir)
+    outdir.mkdir(exist_ok=True, parents=True)
 
     samples_file = outdir / "numpyro-samples.feather"
     checkpoint_file = outdir / "numpyro-checkpoint.pickle"
@@ -167,3 +195,5 @@ def run_nuts_with_checkpoints(
         sampler.post_warmup_state = sampler.last_state
 
         rng_key, _ = jax.random.split(rng_key)
+
+    return df
