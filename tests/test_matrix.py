@@ -331,3 +331,28 @@ class TestPulsarLikelihoodWithDelay:
             f"kernelsolve TtSy should agree. Max diff={np.max(np.abs(TtSy_no_rn - TtSy_rn))}"
         assert np.allclose(TtST_no_rn, TtST_rn, rtol=1e-12), \
             f"kernelsolve TtST should agree. Max diff={np.max(np.abs(TtST_no_rn - TtST_rn))}"
+
+
+class TestMakeUind:
+    def test_variable_epoch_sizes_pad_with_zero(self):
+        U = np.array(
+            [
+                [1, 0],
+                [1, 0],
+                [1, 1],
+                [0, 1],
+                [1, 0],
+            ],
+            dtype=float,
+        )
+        Uind = matrix.make_uind(U)
+        assert Uind.shape == (2, 5)
+        # 1-based TOA indices, zero-padded rows.
+        assert list(Uind[0]) == [1, 2, 3, 5, 0]
+        assert list(Uind[1]) == [3, 4, 0, 0, 0]
+
+    def test_empty_basis_returns_empty_index_table(self):
+        U = np.zeros((5, 0), dtype=float)
+        Uind = matrix.make_uind(U)
+        assert Uind.shape == (0, 1)
+        assert Uind.dtype.kind == 'i'
