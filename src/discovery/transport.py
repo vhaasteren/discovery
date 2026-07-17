@@ -416,6 +416,25 @@ class Transport:
             )
         return out
 
+    def fingerprint(self):
+        """Stable structural digest of this transport (block names/dims/order,
+        parameter dependencies, centering, reference-noise description).
+
+        Digests only the structure returned by ``diagnostics()`` (no params),
+        so it is independent of any particular hyperparameter draw. Consumers
+        (e.g. the nltiming dynamic run manifest) persist this so a saved run's
+        transport can be reconciled without serializing an opaque closure.
+        """
+        import hashlib
+        import json
+
+        payload = json.dumps(
+            {"schema": "discovery-transport-v1", "structure": self.diagnostics()},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 # --------------------------------------------------------------------------
 # ArrayTransport (D24)
@@ -515,3 +534,16 @@ class ArrayTransport:
             "npsr": self.npsr,
             "params": list(self.params),
         }
+
+    def fingerprint(self):
+        """Stable structural digest of the array transport (see
+        :meth:`Transport.fingerprint`)."""
+        import hashlib
+        import json
+
+        payload = json.dumps(
+            {"schema": "discovery-array-transport-v1", "structure": self.diagnostics()},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()

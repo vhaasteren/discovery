@@ -222,47 +222,99 @@ def test_as_reparam_declares_the_true_params(psrs, metamath_backend):
 # 4. Scale matching — the anti-ridge regression
 # ==========================================================================
 
-def test_scale_matching_is_exact_at_p_and_wrong_off_it(psr, metamath_backend):
-    """A 1-column block with conditioner precision p and data curvature lambda:
-    the transformed metric eigenvalue is 1.0 at the exact precision, and
-    (lambda + p)/(lambda + alpha) at a deliberately wrong alpha = 100 p. A
-    'floor' is exactly such a wrong alpha; no mass-matrix adaptation repairs it.
+def _unit_column_ref(n_toa, n0_scalar):
+    """Reference-noise solve for a diagonal N0 = n0_scalar * I over `n_toa`."""
+    n0 = np.full(n_toa, float(n0_scalar))
+
+    def solve(rhs):
+        rhs = np.asarray(rhs)
+        d = n0[:, None] if rhs.ndim == 2 else n0
+        return rhs / d, float(np.sum(np.log(n0)))
+
+    return tr._FrozenSolve(solve, f"diag({n0_scalar})")
+
+
+def _one_by_one_A(transport):
+    """The scalar precision A = L^2 of a 1-block, 1-column transport at params={}."""
+    cf, _ = transport._factor({})
+    L = np.asarray(cf[0])
+    return float(L[0, 0]) ** 2
+
+
+def test_anti_ridge_whitening_at_exact_precision_only(metamath_backend):
+    """The anti-ridge regression, tested on the TRANSFORMED POSTERIOR directly
+    (not via the diagnostics metric, which structurally cannot see a ridge --
+    it builds its target with the block's own precision, so the precision
+    cancels in H/A).
+
+    Physical posterior precision M = lambda + p (data curvature + TRUE prior
+    precision). The transport whitens with A = lambda0 + conditioner. In xi
+    coordinates (q = L^-T xi, A = L L^T) the transformed posterior eigenvalue is
+    M / A. With the reference noise equal to the true noise (lambda0 = lambda):
+
+        conditioner = p      -> M/A = (lambda+p)/(lambda+p)     = 1     (whitened)
+        conditioner = 100 p  -> M/A = (lambda+p)/(lambda+100 p) != 1
+
+    All quantities are O(1) so the two cases are far apart: a transport that
+    floored/ridged the conditioner, or ignored it, changes A and fails here.
     """
-    n_toa = np.asarray(psr.residuals).shape[0]
     rng = np.random.default_rng(1)
-    col = rng.normal(size=(n_toa, 1))
+    n_toa = 16
+    w = rng.normal(size=(n_toa, 1))
+    w = w / np.linalg.norm(w)                     # w^T w = 1  ->  lambda = 1
+    ref = _unit_column_ref(n_toa, 1.0)            # N0 = N = I  ->  lambda0 = lambda
 
-    p_true = 3.0
+    lam = float(w[:, 0] @ w[:, 0])                # = 1 (unit column, N=I)
+    p_true = 1.0
+    M_phys = lam + p_true                         # TRUE posterior precision (indep. of conditioner)
 
-    def make_block(precision):
-        def cond(params):
-            return kh.jnp.array([precision])
-        cond.params = []
-        return tr.TransportBlock("scale", col, {"scale_coefficients(1)": slice(0, 1)},
-                                 cond)
+    def transport(precision):
+        return tr.Transport([_const_block(w, [precision], name="s")],
+                            reference_noise=ref, center=False)
 
-    n0 = np.asarray(psr.toaerrs, dtype=np.float64) ** 2
-    ref = tr._FrozenSolve(
-        lambda rhs: (np.asarray(rhs) / n0[:, None] if np.ndim(rhs) == 2
-                     else np.asarray(rhs) / n0, 0.0),
-        "diag")
+    # exact conditioner -> whitened.
+    A_exact = _one_by_one_A(transport(p_true))
+    np.testing.assert_allclose(M_phys / A_exact, 1.0, rtol=1e-10)
 
-    def noise_solve(rhs):
-        return (np.asarray(rhs) / n0[:, None] if np.ndim(rhs) == 2
-                else np.asarray(rhs) / n0, 0.0)
-
-    lam = float(col[:, 0] @ (col[:, 0] / n0))     # data curvature W^T N^-1 W
-
-    t_exact = tr.Transport([make_block(p_true)], reference_noise=ref, center=False)
-    d = t_exact.diagnostics(params={}, noise_solve=noise_solve)
-    np.testing.assert_allclose(d["metric_eig_min"], 1.0, rtol=1e-10)
-    np.testing.assert_allclose(d["metric_eig_max"], 1.0, rtol=1e-10)
-
+    # 100x-wrong conditioner -> (lambda+p)/(lambda+alpha), emphatically NOT 1.
     alpha = 100 * p_true
-    t_wrong = tr.Transport([make_block(alpha)], reference_noise=ref, center=False)
-    dw = t_wrong.diagnostics(params={}, noise_solve=noise_solve)
-    np.testing.assert_allclose(dw["metric_eig_min"], (lam + p_true) / (lam + alpha),
-                               rtol=1e-8)
+    A_wrong = _one_by_one_A(transport(alpha))
+    np.testing.assert_allclose(M_phys / A_wrong, (lam + p_true) / (lam + alpha),
+                               rtol=1e-10)
+    assert abs(M_phys / A_wrong - 1.0) > 0.9      # genuinely un-whitened, no swamping
+
+
+def test_diagnostics_metric_reports_reference_noise_mismatch(metamath_backend):
+    """Honest coverage of `diagnostics(noise_solve=...)`. The metric it returns is
+    (lambda + p)/(lambda0 + p) with lambda from the live noise solve and lambda0
+    from the frozen reference -- i.e. it measures how well the reference noise N0
+    approximates the true N (at the block's scale), and is exactly 1.0 when
+    N0 = N. It does NOT (and cannot) reveal a conditioner ridge; the anti-ridge
+    property is covered by `test_anti_ridge_whitening_at_exact_precision_only`.
+    """
+    rng = np.random.default_rng(3)
+    n_toa = 16
+    w = rng.normal(size=(n_toa, 1))
+    w = w / np.linalg.norm(w)                     # w^T w = 1
+    p = 3.0
+
+    t = tr.Transport([_const_block(w, [p], name="s")],
+                     reference_noise=_unit_column_ref(n_toa, 2.0), center=False)  # N0 = 2 I
+
+    # true noise N = I  ->  lambda = 1, lambda0 = 1/2
+    def true_solve(rhs):
+        rhs = np.asarray(rhs)
+        return rhs, 0.0                           # N = I
+
+    d = t.diagnostics(params={}, noise_solve=true_solve)
+    lam, lam0 = 1.0, 0.5
+    np.testing.assert_allclose(d["metric_eig_min"], (lam + p) / (lam0 + p), rtol=1e-8)
+    assert d["metric_kind"] == "local_target"     # no CURN block present
+
+    # N0 == N  ->  metric exactly 1.
+    d_match = t.diagnostics(params={},
+                            noise_solve=lambda rhs: (np.asarray(rhs) / 2.0, 0.0))
+    np.testing.assert_allclose(d_match["metric_eig_min"], 1.0, rtol=1e-8)
 
 
 # ==========================================================================
@@ -668,3 +720,42 @@ def test_checkpoint_run_with_a_transport_reparam(psrs, metamath_backend, tmp_pat
                                          outdir=outdir)
 
     assert len(pd.read_feather(outdir / "numpyro-samples.feather")) == 4
+
+
+# ==========================================================================
+# Transport.fingerprint — structural digest for run-manifest reconciliation
+# (Track J: consumed by nltiming's dynamic run writer)
+# ==========================================================================
+
+
+def test_transport_fingerprint_is_stable_and_structural(psr, metamath_backend):
+    F = np.asarray(psr.residuals)[:, None] * np.array([[1.0, 0.5]])
+    ref = _diag_ref(psr)
+
+    a = tr.Transport([_const_block(F, [1.0, 1.0], name="rn")],
+                     reference_noise=ref, center=False)
+    # Same structure -> identical fingerprint (independent of a params draw).
+    b = tr.Transport([_const_block(F, [2.0, 3.0], name="rn")],
+                     reference_noise=ref, center=False)
+    assert a.fingerprint().startswith("sha256:")
+    assert a.fingerprint() == b.fingerprint()
+
+    # A different block name is a structural change -> different fingerprint.
+    c = tr.Transport([_const_block(F, [1.0, 1.0], name="dm")],
+                     reference_noise=ref, center=False)
+    assert c.fingerprint() != a.fingerprint()
+
+    # Different dimensionality -> different fingerprint.
+    F1 = np.asarray(psr.residuals)[:, None] * np.array([[1.0]])
+    d = tr.Transport([_const_block(F1, [1.0], name="rn")],
+                     reference_noise=ref, center=False)
+    assert d.fingerprint() != a.fingerprint()
+
+
+def test_array_transport_fingerprint_is_stable(psrs, metamath_backend):
+    at1 = tr.ArrayTransport([_transport_for(p, psrs, i)
+                             for i, p in enumerate(psrs)])
+    at2 = tr.ArrayTransport([_transport_for(p, psrs, i)
+                             for i, p in enumerate(psrs)])
+    assert at1.fingerprint().startswith("sha256:")
+    assert at1.fingerprint() == at2.fingerprint()
