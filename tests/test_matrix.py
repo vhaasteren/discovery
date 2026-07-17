@@ -17,6 +17,16 @@ from discovery import matrix
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
+@pytest.fixture(autouse=True)
+def _matrix_mode():
+    """This file tests `matrix.py` kernels directly (concrete Woodbury classes,
+    solve_1d/solve_2d). The factory only returns them under matrix mode, which
+    is no longer the default after the PR6 flip -- pin it. The root conftest
+    autouse fixture restores the module default afterward."""
+    ds.config(kernels="matrix")
+    yield
+
+
 class TestWoodburyKernel:
     def test_WoodburyKernel_varNP_vs_varP(self):
         """

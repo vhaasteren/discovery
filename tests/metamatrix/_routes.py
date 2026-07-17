@@ -46,22 +46,30 @@ def build_routes(factory, force=("logL", "conditional", "clogL",
     to the correct module-level state. The default touches every property
     a parity test might consume."""
     out = {}
-
-    # matrix reference
-    out["matrix"] = factory()
-    _force(out["matrix"], force)
-
-    # metamath via the monkeypatch (legacy likelihood + mh kernels)
-    with metamatrix_patch():
-        out["mh_patched"] = factory()
-        _force(out["mh_patched"], force)
-
-    # metamath native (likelihood_metamath.py)
-    ds.config(kernels="metamath")
+    # Restore whatever the module default is on the way out, rather than
+    # assuming it is 'matrix'. After the PR6 default flip the module default is
+    # 'metamath', so the matrix reference route must set its mode EXPLICITLY --
+    # otherwise the "matrix" reference would silently be built under metamath and
+    # every parity comparison would become a self-comparison.
+    default = ds.config()
     try:
+        # matrix reference (explicit, not relying on the module default)
+        ds.config(kernels="matrix")
+        out["matrix"] = factory()
+        _force(out["matrix"], force)
+
+        # metamath via the monkeypatch (legacy likelihood + mh kernels): needs
+        # matrix mode active so ds.* binds the likelihood.py classes.
+        ds.config(kernels="matrix")
+        with metamatrix_patch():
+            out["mh_patched"] = factory()
+            _force(out["mh_patched"], force)
+
+        # metamath native (likelihood_metamath.py)
+        ds.config(kernels="metamath")
         out["mh_native"] = factory()
         _force(out["mh_native"], force)
     finally:
-        ds.config(kernels="matrix")
+        ds.config(kernels=default)
 
     return out

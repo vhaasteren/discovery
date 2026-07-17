@@ -60,6 +60,14 @@ It does two things: sets the `_kernels` factory mode, and rebinds the top-level
 `PulsarLikelihood`/`GlobalLikelihood`/`ArrayLikelihood` to the matrix or metamath
 implementation. Call it **before** building a model.
 
+**The default is now `'metamath'`** (`__init__.py` sets `_KERNELS = "metamath"`
+and calls `config(kernels="metamath")` once at import so the factory mode and the
+likelihood-class bindings agree in lock-step). The certified graph path is what
+every user gets by default; `config(kernels='matrix')` remains selectable until
+the Phase 5 deletion, as the escape hatch that backs the flip's safety case.
+Rollback is the one-line default plus the import-time `config` call; no data or
+artifact format depends on the default.
+
 `signals.py` never names a kernel implementation — it calls
 `kernels.NoiseMatrix1D_var(…)` etc., and the factory resolves the name per mode
 (metamath classes from a canonical map, else fall through to `matrix.*`). This
