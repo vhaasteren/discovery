@@ -82,6 +82,19 @@ def get_mode():
     return _mode
 
 
+def require_metamath(feature):
+    """Raise unless the metamath kernel path is active (D1).
+
+    New entry points are metamath-only: the legacy path is frozen for deletion,
+    and implementing new features twice is exactly the duplication this branch
+    exists to remove.
+    """
+    if _mode != "metamath":
+        raise NotImplementedError(
+            f"{feature} requires the metamath kernel path; call "
+            "discovery.config(kernels='metamath') before building the model.")
+
+
 # ---------------------------------------------------------------------------
 # Collapsed constructors
 # ---------------------------------------------------------------------------

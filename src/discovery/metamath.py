@@ -857,6 +857,51 @@ def vectorgpcomponent(g, ys, Nsolves, Fs, prior, coeffs, means, ext_coeffs, ext_
 
 
 @mm.graph
+def vectorresidualcomponent(g, ys, Nsolves, Fs, prior, coeffs, means,
+                            ext_coeffs, ext_Fs):
+    """ArrayLikelihood.clogL, residual form: log p(y, c) at fixed GP
+    coefficients with NO F^T N^-1 F products.
+
+    Identical leaf contract to `vectorgpcomponent` (same inputs, same named
+    outputs 'logp'/'staged', same prior/means/reparam semantics); different
+    algebra:
+
+        r_i  = y_i - F_i @ c[i] - sum_e Fext_e,i @ ccw_e[i]
+        logp = sum_i [ -0.5 r_i^T N_i^-1 r_i - 0.5 logdet N_i ]
+               + prior(c - means) + ldL
+
+    With constant N the per-pulsar solve factorization folds at trace time and
+    each evaluation costs one O(n_toa * k) matvec plus a vector solve. With
+    parameter-dependent N nothing of shape (n_toa, k) is ever pushed through
+    the solve -- this is the varying-white-noise fast path.
+
+    ExtSignal contributions are plain subtractions from `r`; the cross-term
+    algebra of `vectorgpcomponent` is NOT replicated -- the two forms are
+    algebraically identical.
+
+    No f64 pins in this graph: it is float64-default; single-precision
+    treatment is out of scope here.
+    """
+    c, ldL = coeffs.split()
+    logpr = prior(c - means)           # means is ConstLeaf(0.0) when absent
+
+    data_terms, ldNs = [], []
+    for i, (y, F, Nsolve) in enumerate(zip(ys, Fs, Nsolves)):
+        r = y - F @ c[i]
+        for ccw, Fcw_list in zip(ext_coeffs, ext_Fs):
+            r = r - Fcw_list[i] @ ccw[i]
+        Nmr, lN = Nsolve(r)
+        data_terms.append(g.dot(r, Nmr))
+        ldNs.append(lN)
+
+    logp = (-0.5 * g.sum_all(data_terms) - 0.5 * g.sum_all(ldNs)
+            + logpr + ldL)
+
+    g.named(logp, 'logp')
+    g.named(g.pair(logp, c), 'staged')
+
+
+@mm.graph
 def vectorwoodburysolve(g, ys, Nsolves, Fs, Pinv):
     Nmys, NmFs, FtNmys, FtNmFs, lNs = [], [], [], [], []
 
@@ -1306,21 +1351,13 @@ class VectorWoodburyKernel(Kernel):
             self.P.make_inv
         )
 
-    def make_kernelproduct_gpcomponent(self, ys, transform=None, extsignals=None):
-        """ArrayLikelihood.clogL path. Returns a metamatrix graph.
+    def _coefficient_leaves(self, transform):
+        """Shared coefficient/prior leaves for the cross and residual forms.
 
-        Composes the GP-coefficient log-likelihood from `vectorgpcomponent`:
-
-            xi --[reparams]--> c  --(prior on c - means)--  data sees c
-
-        Leaves go in as graphs / FuncLeafs / arrays; folding decides what
-        runs at trace time vs runtime. The output is a graph with named
-        subgraphs 'logp' and 'staged'; the method prunes to whichever
-        matches the reparam state.
+        Returns (prior_graph, _coeffs, means_leaf, has_reparams).
 
         - ``transform``: callable or list of ``rp(params, c) -> (c, ldL)``.
         - ``self.means``: callable ``params -> a0``; centers the GP prior.
-        - ``extsignals``: list of ``ExtSignal`` (each with .coeffs, .Fs).
         """
         if transform is None:
             reparams = []
@@ -1332,8 +1369,10 @@ class VectorWoodburyKernel(Kernel):
         # Prior on c_for_prior: either the uniform-Phi wrap of `P.make_inv` or,
         # for a mixed-Phi compound (commongp + HD globalgp), the per-GP-sum
         # graph supplied by `CompoundGP._build_mixed_logprior`. Both look the
-        # same to `vectorgpcomponent` — a GraphLeaf taking c_for_prior.
-        if hasattr(self, 'prior') and self.prior is not None:
+        # same to the component graphs — a GraphLeaf taking c_for_prior. Reusing
+        # it unchanged is what keeps the exact dense HD coefficient prior in the
+        # residual form for free.
+        if getattr(self, 'prior', None) is not None:
             prior_graph = self.prior
         else:
             prior_graph = gaussian_coefficient_logprior(None, self.P.make_inv)
@@ -1361,8 +1400,23 @@ class VectorWoodburyKernel(Kernel):
 
         means_leaf = self.means if getattr(self, 'means', None) is not None else 0.0
 
-        ext_coeffs = [es.coeffs for es in (extsignals or [])]
-        ext_Fs     = [list(es.Fs) for es in (extsignals or [])]
+        return prior_graph, _coeffs, means_leaf, bool(reparams)
+
+    def make_kernelproduct_gpcomponent(self, ys, transform=None, extsignals=None):
+        """ArrayLikelihood.clogL path, CROSS form. Returns a metamatrix graph.
+
+        Composes the GP-coefficient log-likelihood from `vectorgpcomponent`:
+
+            xi --[reparams]--> c  --(prior on c - means)--  data sees c
+
+        Leaves go in as graphs / FuncLeafs / arrays; folding decides what
+        runs at trace time vs runtime. The output is a graph with named
+        subgraphs 'logp' and 'staged'; the method prunes to whichever
+        matches the reparam state.
+
+        - ``extsignals``: list of ``ExtSignal`` (each with .coeffs, .Fs).
+        """
+        prior_graph, _coeffs, means_leaf, has_rp = self._coefficient_leaves(transform)
 
         graph = vectorgpcomponent(
             ys,
@@ -1371,10 +1425,27 @@ class VectorWoodburyKernel(Kernel):
             prior_graph,
             _coeffs,
             means_leaf,
-            ext_coeffs,
-            ext_Fs,
+            [es.coeffs for es in (extsignals or [])],
+            [list(es.Fs) for es in (extsignals or [])],
         )
-        return mm.prune_graph(graph, output=('staged' if reparams else 'logp'))
+        return mm.prune_graph(graph, output=('staged' if has_rp else 'logp'))
+
+    def make_residualproduct(self, ys, transform=None, extsignals=None):
+        """Residual-form twin of make_kernelproduct_gpcomponent. Same contract,
+        no FtNmF. See vectorresidualcomponent."""
+        prior_graph, _coeffs, means_leaf, has_rp = self._coefficient_leaves(transform)
+
+        graph = vectorresidualcomponent(
+            ys,
+            [N.make_solve for N in self.Ns],
+            list(self.Fs),
+            prior_graph,
+            _coeffs,
+            means_leaf,
+            [es.coeffs for es in (extsignals or [])],
+            [list(es.Fs) for es in (extsignals or [])],
+        )
+        return mm.prune_graph(graph, output=('staged' if has_rp else 'logp'))
 
 
 class CompoundGP:
