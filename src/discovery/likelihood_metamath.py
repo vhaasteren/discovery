@@ -23,6 +23,7 @@ from . import metamatrix
 from . import metamath
 from . import utils as kh
 from . import summary
+from . import _kernels
 
 # Kernel
 #   ConstantKernel
@@ -556,7 +557,24 @@ class GlobalLikelihood(summary.SummaryMixin):
 
 class ArrayLikelihood(summary.SummaryMixin):
     def __init__(self, psls, *, commongp=None, globalgp=None, transform=None,
-                 decenter=False, extsignals=None, reference=None):
+                 decenter=False, extsignals=None, reference=None,
+                 clogl_form="auto", transport=None):
+        if clogl_form not in ("auto", "cross", "residual"):
+            raise ValueError(f"unknown clogl_form {clogl_form!r}")
+        if decenter and transport is not None:
+            raise ValueError(
+                "ArrayLikelihood: decenter=True and transport= are mutually "
+                "exclusive; decenter is transport-construction sugar")
+        if (decenter or transport is not None) and commongp is None:
+            raise ValueError(
+                "ArrayLikelihood: decenter/transport requires a commongp "
+                "coefficient assembly")
+        # Which algebra `clogL` uses (D4). "cross" is the historical
+        # vectorgpcomponent (forms F^T N^-1 F per pulsar); "residual" is the
+        # FtNmF-free twin. "auto" picks residual iff any per-pulsar noise solve
+        # has free parameters -- the configuration in which the cross form
+        # rebuilds those O(n_toa * k^2) products at every evaluation.
+        self.clogl_form = clogl_form
         self.psls = psls
         self.commongp = commongp
         self.globalgp = globalgp
@@ -576,6 +594,37 @@ class ArrayLikelihood(summary.SummaryMixin):
         # deterministic Fourier signals, use makecommongp_fourier(..., means=...)
         # instead.
         self.extsignals = extsignals
+        # A prebuilt transport (§5.9). `decenter=True` is sugar that builds one
+        # from the commongp/globalgp blocks; passing `transport=` supplies your
+        # own (e.g. with a pinned-noisedict reference for varying white noise).
+        self.transport = transport
+        if transport is not None:
+            self._validate_transport_compatibility()  # eagerly builds assembly
+
+    def _validate_transport_compatibility(self):
+        vsm, _ = self._coefficient_assembly
+        # Match _coefficient_leaves exactly: a flat index means one coefficient
+        # key/slice per pulsar; a list is already per-pulsar.
+        index_per_psr = (
+            vsm.index if isinstance(vsm.index, list)
+            else [{par: sl} for par, sl in vsm.index.items()]
+        )
+        expected = [list(d) for d in index_per_psr]
+        actual = [list(t.index) for t in self.transport.transports]
+        if self.transport.npsr != len(self.psls):
+            raise ValueError(
+                f"transport has {self.transport.npsr} pulsars; likelihood has "
+                f"{len(self.psls)}")
+        if actual != expected:
+            raise ValueError(
+                f"transport coefficient keys/order {actual} do not match "
+                f"coefficient assembly {expected}")
+        widths = [sum(s.stop - s.start for s in d.values())
+                  for d in index_per_psr]
+        if any(w != self.transport.dimension for w in widths):
+            raise ValueError(
+                f"transport dimension {self.transport.dimension} does not "
+                f"match coefficient widths {widths}")
 
     # Cached properties that feed on `self.reference`. Assigning it after
     # construction (the single-precision opt-in workflow does exactly this) must
@@ -669,6 +718,50 @@ class ArrayLikelihood(summary.SummaryMixin):
 
         return vsm, ys
 
+    def _build_decenter_transport(self, ys):
+        """`decenter=True` sugar (§5.9): build an ArrayTransport from the
+        commongp (+ globalgp CURN view) blocks, per-pulsar frozen-noise
+        reference, centered on the residuals `ys`.
+
+        `reference_noise_frozen(psl.N, params0={})` RAISES when the per-pulsar
+        kernel has free parameters, converting the old closure's silent
+        constant-N assumption into a diagnosed error. Callers with varying white
+        noise build the transport explicitly with `reference_noise(psr)` (or a
+        pinned noisedict) and pass it via `transport=`.
+        """
+        from . import transport as _tr
+        cgp_list = self.commongp if isinstance(self.commongp, list) else [self.commongp]
+        npsr = len(self.psls)
+        per_psr = []
+        for i, psl in enumerate(self.psls):
+            blocks = [_tr.gp_block(gp, psr_slot=i) for gp in cgp_list]
+            if self.globalgp is not None:
+                blocks.append(_tr.globalgp_curn_block(self.globalgp, i, npsr))
+            per_psr.append(_tr.Transport(
+                blocks,
+                reference_noise=_tr.reference_noise_frozen(
+                    psl.N, params0={},
+                    description=f"frozen per-pulsar kernel "
+                                f"({getattr(psl, 'name', f'psl[{i}]')})"),
+                reference_residual=ys[i], center=True))
+        return _tr.ArrayTransport(per_psr)
+
+    @functools.cached_property
+    def clogl_form_resolved(self):
+        """Which `clogL` algebra this instance actually uses (D4).
+
+        Pure introspection via `metamatrix.graph_params` -- nothing is folded or
+        evaluated. Exposed as a cached property rather than written as a side
+        effect of building `clogL`, so it can be asked before or without it.
+        """
+        if self.clogl_form != "auto":
+            return self.clogl_form
+
+        vsm, _ = self._coefficient_assembly
+        varying = any(metamatrix.graph_params(N.make_solve) for N in vsm.Ns)
+
+        return "residual" if varying else "cross"
+
     @functools.cached_property
     def conditional(self):
         if self.commongp is None or self.globalgp is not None:
@@ -713,61 +806,26 @@ class ArrayLikelihood(summary.SummaryMixin):
 
         vsm, ys = self._coefficient_assembly
 
-        if self.decenter:
-            # Build a decentering reparam closure. Precomputes per-pulsar
-            # NmF / FtNmF / NmFty at trace time (assumes N and F are constants).
-            # All metamath kernels expose `make_solve` as a graph and a
-            # CompoundGP's `.F` may be either an array or a graph dict;
-            # materialize each via `mm.func(...)({}, params={})`.
-            def _solve_2d(N, F):
-                return metamatrix.func(N.make_solve)(F, params={})
-
-            def _eval_F(F):
-                if isinstance(F, dict):
-                    return kh.jnp.asarray(metamatrix.func(F)(params={}))
-                return kh.jnp.asarray(F)
-
-            vsm_Fs = [_eval_F(F) for F in vsm.Fs]
-            NmFs, ldNs = zip(*[_solve_2d(N, F) for N, F in zip(vsm.Ns, vsm_Fs)])
-            FtNmFs = [F.T @ NmF for F, NmF in zip(vsm_Fs, NmFs)]
-            NmFtys = [NmF.T @ y for NmF, y in zip(NmFs, ys)]
-            FtNmF, NmFty = kh.jnparray(FtNmFs), kh.jnparray(NmFtys)
-
-            def decenter_transform(params, c):
-                cgp_list = (self.commongp if isinstance(self.commongp, list)
-                            else [self.commongp])
-                phis_invs_commongp = [gp.Phi.getN(params)**-1 for gp in cgp_list]
-                if self.globalgp is not None:
-                    # decenter using CURN: just the diagonal of the globalgp Phi
-                    phis_invs_globalgp = (kh.jnp.diag(
-                        self.globalgp.Phi.getN(params)**-1
-                    ).reshape((len(self.psls), -1)))
-                    phis_invs = kh.jnp.concatenate(
-                        [*phis_invs_commongp, phis_invs_globalgp], axis=1)
-                else:
-                    phis_invs = kh.jnp.concatenate([*phis_invs_commongp], axis=1)
-                i1, i2 = kh.jnp.diag_indices(phis_invs.shape[1], ndim=2)
-
-                cf = kh.matrix_factor(FtNmF.at[:, i1, i2].add(phis_invs), lower=True)
-                am = kh.jsp.linalg.solve_triangular(
-                    cf[0], c, trans=1, lower=cf[1])
-                mus = kh.matrix_solve(cf, NmFty)
-                # Jacobian of f^-1 wrt xi: |L|; cf[0] is L^-1.
-                ldL = -kh.jnp.logdet(cf[0][:, i1, i2])
-
-                return am + mus, ldL
-            decenter_transform.params = []
-
         # reparam stage: bijections on the GP coefficients; Jacobians compose.
+        # A transport (prebuilt or the decenter=True sugar) is composed BEFORE
+        # any user transform (§5.9).
         reparams = []
-        if self.decenter:
-            reparams.append(decenter_transform)
+        if self.transport is not None:                # already validated eagerly
+            reparams.append(self.transport.as_reparam())
+        elif self.decenter:                           # sugar: GP-only default
+            reparams.append(self._build_decenter_transport(ys).as_reparam())
         if self.transform is not None:
             reparams.extend(self.transform if isinstance(self.transform, (list, tuple))
                             else [self.transform])
 
-        loglike = vsm.make_kernelproduct_gpcomponent(
-            ys, transform=reparams, extsignals=self.extsignals)
+        form = self.clogl_form_resolved
+        if form == "residual":
+            _kernels.require_metamath("clogl_form='residual'")
+            loglike = vsm.make_residualproduct(
+                ys, transform=reparams, extsignals=self.extsignals)
+        else:
+            loglike = vsm.make_kernelproduct_gpcomponent(
+                ys, transform=reparams, extsignals=self.extsignals)
 
         # metamath.VectorWoodburyKernel returns a graph; matrix.py still
         # returns a callable. ffunc converts a graph to a `(params) -> ...`
