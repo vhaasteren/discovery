@@ -76,7 +76,7 @@ class PulsarLikelihood(summary.SummaryMixin):
     metamath instances because `ds.config(kernels='metamath')` sets the
     `_kernels` factory mode.
     """
-    def __init__(self, args, concat=True):
+    def __init__(self, args, concat=True, marginalize_all_but_last=None):
         # retain the original components so the model can describe itself
         # (see discovery.summary); the math path uses only y, delay, N below.
         # `concat` is kept too so the kernel-tree view knows whether GPs were
@@ -136,6 +136,20 @@ class PulsarLikelihood(summary.SummaryMixin):
             for vgp in vgps:
                 if hasattr(vgp, 'gpname') and vgp.gpname == 'gw':
                     self.gw = vgp
+
+            # The chained (concat=False) construction below overwrites `.index`
+            # per iteration, so only the LAST variable GP keeps sampled
+            # coefficients; the rest are silently marginalized. Make that
+            # explicit rather than accidental (D2).
+            if len(vgps) > 1 and not concat and marginalize_all_but_last is not True:
+                shadowed = [getattr(g, 'gpname', '<unnamed>') for g in vgps[:-1]]
+                last = getattr(vgps[-1], 'gpname', '<unnamed>')
+                raise ValueError(
+                    f"PulsarLikelihood(concat=False) with multiple variable GPs "
+                    f"analytically marginalizes all but the LAST one: only "
+                    f"'{last}' keeps sampled coefficients; {shadowed} are shadowed. "
+                    f"Pass marginalize_all_but_last=True to confirm this, or use "
+                    f"concat=True to sample all coefficient blocks.")
 
             if len(vgps) > 1 and concat:
                 vgp = metamath.CompoundGP(vgps)
@@ -211,7 +225,10 @@ class PulsarLikelihood(summary.SummaryMixin):
         if self.delay:
             raise NotImplementedError('No PulsarLikelihood.clogL with delays so far.')
         else:
-            return self.N.make_kernelproduct_gpcomponent(self.y)
+            # ffunc is a no-op for callables, so this is safe for any return
+            # type and makes the property's contract uniform: always a
+            # `(params) -> value` callable carrying `.params` (D19).
+            return ffunc(self.N.make_kernelproduct_gpcomponent(self.y))
 
     @functools.cached_property
     def logL(self):

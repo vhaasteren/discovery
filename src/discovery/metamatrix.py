@@ -417,6 +417,34 @@ def prune_graph(graph: Graph,
     return pruned
 
 
+def graph_params(graph):
+    """Sorted union of `.params` over every FuncLeaf in `graph`, recursing
+    into GraphLeafs and callable-attached `.graph` values. Pure inspection:
+    nothing is folded or evaluated.
+
+    Used to decide, before building a likelihood graph, whether a kernel's
+    solve depends on sampled parameters (e.g. clogl_form='auto' routing).
+    """
+    out = set()
+    seen = set()
+
+    def visit(g):
+        if id(g) in seen:
+            return
+        seen.add(id(g))
+        for node in g.values():
+            if isinstance(node, FuncLeaf):
+                out.update(getattr(node.fn, 'params', []))
+                nested = getattr(node.fn, 'graph', None)
+                if isinstance(nested, dict):
+                    visit(nested)
+            elif isinstance(node, GraphLeaf):
+                visit(node.graph)
+
+    visit(graph)
+    return sorted(out)
+
+
 def visualize_graph(graph: Graph, fold=False, format='svg', rankdir='TB',
                     working=None):
     """

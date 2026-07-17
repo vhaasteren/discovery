@@ -440,3 +440,94 @@ class TestAllVariableConditional:
         # entries differ at the float64 rounding level.
         np.testing.assert_allclose(out["matrix"][1], out["metamath"][1], rtol=1e-8)
         assert out["matrix"][2] == out["metamath"][2]
+
+
+class TestConcatShadowGuard:
+    """`PulsarLikelihood(concat=False)` chains variable GPs and overwrites
+    `.index` each iteration, so every variable GP but the last is silently
+    marginalized. That must be confirmed, not stumbled into (D2)."""
+
+    def _two_variable_gps(self, psr):
+        return [psr.residuals,
+                ds.makenoise_measurement(psr, psr.noisedict),
+                ds.makegp_fourier(psr, ds.powerlaw, components=10, name='rednoise'),
+                ds.makegp_fourier(psr, ds.powerlaw, components=5, name='crn')]
+
+    @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
+    def test_unflagged_concat_false_raises_naming_the_shadowed_gps(self, b1855, kernels):
+        ds.config(kernels=kernels)
+        try:
+            with pytest.raises(ValueError, match="shadowed"):
+                ds.PulsarLikelihood(self._two_variable_gps(b1855), concat=False)
+        finally:
+            ds.config(kernels="matrix")
+
+    @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
+    def test_the_error_names_the_surviving_and_shadowed_blocks(self, b1855, kernels):
+        ds.config(kernels=kernels)
+        try:
+            with pytest.raises(ValueError) as excinfo:
+                ds.PulsarLikelihood(self._two_variable_gps(b1855), concat=False)
+        finally:
+            ds.config(kernels="matrix")
+
+        message = str(excinfo.value)
+        assert "'crn'" in message          # the last GP survives
+        assert "rednoise" in message       # the shadowed one is named
+
+    @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
+    def test_confirmed_marginalization_constructs(self, b1855, kernels):
+        """The flag turns the guard off on both routes."""
+        ds.config(kernels=kernels)
+        try:
+            model = ds.PulsarLikelihood(self._two_variable_gps(b1855), concat=False,
+                                        marginalize_all_but_last=True)
+        finally:
+            ds.config(kernels="matrix")
+
+        assert model.N.index is not None
+
+    def test_confirmed_marginalization_keeps_only_the_last_gp(self, b1855):
+        """Scoped to metamath: `clogL` over CHAINED variable GPs is unsupported
+        on the legacy matrix route (WoodburyKernel_varNP reaches for
+        `make_solve_1d` on its inner WoodburyKernel_varP, which does not define
+        it). That gap predates this guard and is out of scope here — the matrix
+        path is frozen for Phase 5 deletion."""
+        ds.config(kernels="metamath")
+        try:
+            model = ds.PulsarLikelihood(self._two_variable_gps(b1855), concat=False,
+                                        marginalize_all_but_last=True)
+            params = model.clogL.params
+        finally:
+            ds.config(kernels="matrix")
+
+        assert any('crn_coefficients' in p for p in params)
+        assert not any('rednoise_coefficients' in p for p in params)
+
+    @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
+    def test_concat_true_samples_both_coefficient_blocks(self, b1855, kernels):
+        ds.config(kernels=kernels)
+        try:
+            model = ds.PulsarLikelihood(self._two_variable_gps(b1855), concat=True)
+            params = model.clogL.params
+        finally:
+            ds.config(kernels="matrix")
+
+        assert any('crn_coefficients' in p for p in params)
+        assert any('rednoise_coefficients' in p for p in params)
+
+    @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
+    def test_a_single_variable_gp_is_never_ambiguous(self, b1855, kernels):
+        """One variable GP has nothing to shadow: concat=False stays legal."""
+        ds.config(kernels=kernels)
+        try:
+            model = ds.PulsarLikelihood(
+                [b1855.residuals,
+                 ds.makenoise_measurement(b1855, b1855.noisedict),
+                 ds.makegp_fourier(b1855, ds.powerlaw, components=10, name='rednoise')],
+                concat=False)
+            params = model.clogL.params
+        finally:
+            ds.config(kernels="matrix")
+
+        assert any('rednoise_coefficients' in p for p in params)
