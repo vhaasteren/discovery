@@ -323,3 +323,120 @@ class TestLikelihood:
         # we need to check the systematic difference between enterprise and discovery
         # before we can run this, but at least we can check the JITted likelihood runs
         # assert float(jax.numpy.abs(ll_difference - offset)) <= atol
+
+
+@pytest.fixture(scope="module")
+def b1855():
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    return ds.Pulsar.read_feather(data_dir / "v1p1_de440_pint_bipm2019-B1855+09.feather")
+
+
+def _all_variable_model(psr):
+    """Fixed white noise + two variable GP blocks, concat'd into ONE Woodbury
+    layer whose N is the bare measurement noise. On the matrix route that
+    assembles a `WoodburyKernel_varP` over a `matrix.NoiseMatrix`, which is the
+    branch `likelihood.conditional` routes to `make_kernelsolve_simple` (D16)."""
+    return ds.PulsarLikelihood([psr.residuals,
+                                ds.makenoise_measurement(psr, psr.noisedict),
+                                ds.makegp_timing(psr, svd=True, variable=True),
+                                ds.makegp_fourier(psr, ds.powerlaw, components=10,
+                                                  name='rednoise')])
+
+
+class TestAllVariableConditional:
+    """`conditional` on an all-variable single-pulsar model used to crash on the
+    matrix route: `WoodburyKernel_varP` had no `make_kernelsolve_simple` (D16).
+
+    Route-agnostic by design — the method is deleted with `matrix.py` at Phase 5,
+    but this test keeps running on the surviving path.
+    """
+
+    @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
+    def test_conditional_returns_both_coefficient_blocks(self, b1855, kernels):
+        ds.config(kernels=kernels)
+        try:
+            model = _all_variable_model(b1855)
+            cond = model.conditional
+            index = model.N.index
+
+            p0 = ds.sample_uniform(cond.params)
+            mu, cf = cond(p0)
+        finally:
+            ds.config(kernels="matrix")
+
+        # Both blocks are present and keyed by the assembled index names.
+        keys = sorted(index)
+        assert len(keys) == 2
+        assert any('timingmodel_coefficients' in k for k in keys)
+        assert any('rednoise_coefficients' in k for k in keys)
+
+        width = sum(sli.stop - sli.start for sli in index.values())
+        assert mu.shape == (width,)
+        assert np.all(np.isfinite(np.asarray(mu)))
+
+        for par, sli in index.items():
+            block = mu[sli]
+            assert block.shape == (sli.stop - sli.start,), par
+
+        # cf is the lower-Cholesky factor of Sigma = Pinv + FtNmF.
+        L, lower = cf[0], cf[1]
+        assert bool(lower) is True
+        assert L.shape == (width, width)
+        assert np.all(np.diag(np.asarray(L)) > 0.0)
+
+    @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
+    def test_sample_conditional_draws_with_the_lower_factor_contract(
+            self, b1855, kernels):
+        ds.config(kernels=kernels)
+        try:
+            model = _all_variable_model(b1855)
+            sample_cond = model.sample_conditional
+            index = model.N.index
+
+            p0 = ds.sample_uniform(sample_cond.params)
+            key, c = sample_cond(jax.random.PRNGKey(42), p0)
+        finally:
+            ds.config(kernels="matrix")
+
+        assert sorted(c) == sorted(index)
+        for par, sli in index.items():
+            assert c[par].shape == (sli.stop - sli.start,)
+            assert np.all(np.isfinite(np.asarray(c[par])))
+
+    def test_matrix_route_ksolve_reports_only_prior_params(self, b1855):
+        """The new `make_kernelsolve_simple` reports the P_var params it
+        actually reads; N is fixed, so it contributes none."""
+        ds.config(kernels="matrix")
+        model = _all_variable_model(b1855)
+        kernel = model.N
+
+        assert type(kernel).__name__ == "WoodburyKernel_varP"
+
+        ksolve = kernel.make_kernelsolve_simple(model.y)
+
+        assert ksolve.params == sorted(kernel.P_var.make_inv().params)
+
+    def test_conditional_matches_the_certified_metamath_route(self, b1855):
+        """The new matrix-route body is proven against the metamath path, which
+        the parity suite already certifies. Running is not enough: this pins the
+        actual numbers."""
+        p0 = None
+        out = {}
+        for kernels in ("matrix", "metamath"):
+            ds.config(kernels=kernels)
+            try:
+                model = _all_variable_model(b1855)
+                cond = model.conditional
+                if p0 is None:
+                    p0 = ds.sample_uniform(cond.params)
+                mu, cf = cond(p0)
+                out[kernels] = (np.asarray(mu), np.asarray(cf[0]), bool(cf[1]))
+            finally:
+                ds.config(kernels="matrix")
+
+        np.testing.assert_allclose(out["matrix"][0], out["metamath"][0], rtol=1e-10)
+        # The factor itself is compared more loosely: the two routes assemble
+        # Sigma by different (algebraically identical) orderings, so a handful of
+        # entries differ at the float64 rounding level.
+        np.testing.assert_allclose(out["matrix"][1], out["metamath"][1], rtol=1e-8)
+        assert out["matrix"][2] == out["metamath"][2]

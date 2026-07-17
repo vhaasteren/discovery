@@ -1364,6 +1364,34 @@ class WoodburyKernel_varP(VariableKernel):
 
         return kernelsolve
 
+    def make_kernelsolve_simple(self, y):
+        # GP-coefficient conditional mean for Sigma = N + F P F^T, with no
+        # marginalized-out block: b = (P^-1 + F^t N^-1 F)^-1 F^t N^-1 y,
+        # returned with the lower-Cholesky factor of (P^-1 + F^t N^-1 F).
+        # Mirrors WoodburyKernel_varNP.make_kernelsolve_simple; here N is fixed,
+        # so the N^-1 F products are precomputed once (no params).
+        #
+        # cho_factor/cho_solve are called directly rather than through the
+        # configurable matrix_factor/matrix_solve aliases: `cf` is handed to the
+        # caller under a lower-Cholesky contract (likelihood.sample_conditional
+        # solves cf[0].T with lower=False), which an LU configuration -- or
+        # cho_factor's own lower=False default -- would silently violate.
+        NmF, _ = self.N.solve_2d(self.F)          # N fixed -> no params
+        FtNmF = jnparray(self.F.T @ NmF)
+        FtNmy = jnparray(NmF.T @ jnparray(y))
+
+        P_var_inv = self.P_var.make_inv()
+
+        def kernelsolve(params):
+            Pinv, _ = P_var_inv(params)
+            cf = jsp.linalg.cho_factor(Pinv + FtNmF, lower=True)
+            b_mean = jsp.linalg.cho_solve(cf, FtNmy)
+
+            return b_mean, cf
+
+        kernelsolve.params = P_var_inv.params
+        return kernelsolve
+
     def make_kernelsolve(self, y, T):
         # Tt Sigma y = Tt (N + F P Ft) y
         # Tt Sigma^-1 y = Tt (Nm - Nm F (P^-1 + Ft Nm F)^-1 Ft Nm) y
