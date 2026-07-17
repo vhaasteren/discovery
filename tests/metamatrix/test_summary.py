@@ -153,3 +153,116 @@ def test_signal_object_reprs(psr, psrs, _matrix_backend):
 
     g = R.intrinsic_rn_plus_global_hd(psrs)
     assert "GlobalVariableGP" in repr(g.globalgp) and "hd_orf" in repr(g.globalgp)
+
+
+# --------------------------------------------------------------------------
+# the `coefficients` column (D17): treatment is a property of the FRONTEND,
+# derived from the assembled kernel's .index -- never from the GP's type.
+# --------------------------------------------------------------------------
+
+def _row(frame, signal, collection=None):
+    sel = frame[frame.signal == signal]
+    if collection is not None:
+        sel = sel[sel.collection == collection]
+    assert len(sel) == 1, f"expected one '{signal}' row, got {len(sel)}"
+    return sel.iloc[0]
+
+
+def test_variable_timing_reports_sampled_timing_and_kernel_white_noise(psr, backend):
+    """`makegp_timing(variable=True)` exposes sampled coefficients to clogL; the
+    white-noise kernel is not a coefficient block at all."""
+    frame = S.summary_frame(R.variable_timing(psr))
+
+    assert _row(frame, "timingmodel").coefficients.startswith("sampled (")
+    assert _row(frame, "measurement").coefficients == "kernel"
+    # rednoise is variable too and concat=True fuses both into one index
+    assert _row(frame, "rednoise").coefficients.startswith("sampled (")
+
+
+def test_shadowed_gp_is_reported_marginalized_not_sampled(psr, backend):
+    """The mislabeling regression: under `concat=False` only the LAST variable
+    GP keeps sampled coefficients. Reporting from the GP's type would call both
+    'sampled'; reporting from the assembled index tells the truth."""
+    model = ds.PulsarLikelihood([
+        psr.residuals,
+        ds.makenoise_measurement(psr, psr.noisedict),
+        ds.makegp_fourier(psr, ds.powerlaw, components=10, name="rednoise"),
+        ds.makegp_fourier(psr, ds.powerlaw, components=5, name="crn"),
+    ], concat=False, marginalize_all_but_last=True)
+
+    frame = S.summary_frame(model)
+
+    assert _row(frame, "crn").coefficients.startswith("sampled (")
+    assert _row(frame, "rednoise").coefficients == "marginalized"
+
+
+def test_inner_gp_is_marginalized_when_an_outer_commongp_assembles(psrs, backend):
+    """An ArrayLikelihood with an outer coefficient assembly marginalizes the
+    per-pulsar GPs inside each psl.N; only the outer commongp is sampled."""
+    T = ds.getspan(psrs)
+    model = ds.ArrayLikelihood(
+        [ds.PulsarLikelihood([
+            p.residuals,
+            ds.makenoise_measurement(p, p.noisedict),
+            ds.makegp_timing(p, svd=True),
+            # a VARIABLE GP inside the per-pulsar kernel
+            ds.makegp_fourier(p, ds.powerlaw, components=10, name="innerrn"),
+        ]) for p in psrs],
+        commongp=ds.makecommongp_fourier(psrs, ds.powerlaw, components=30, T=T,
+                                         name="rednoise"))
+
+    frame = S.summary_frame(model)
+
+    assert _row(frame, "rednoise", collection="(shared)").coefficients.startswith("sampled (")
+    for p in psrs:
+        assert _row(frame, "innerrn", collection=p.name).coefficients == "marginalized"
+
+
+def test_no_outer_assembly_reports_each_pulsars_own_index(psrs, backend):
+    """Without commongp/globalgp, ArrayLikelihood.clogL is the sum of psl.clogL,
+    so each pulsar's own variable GP IS sampled."""
+    model = ds.ArrayLikelihood([
+        ds.PulsarLikelihood([
+            p.residuals,
+            ds.makenoise_measurement(p, p.noisedict),
+            ds.makegp_timing(p, svd=True),
+            ds.makegp_fourier(p, ds.powerlaw, components=10, name="innerrn"),
+        ]) for p in psrs])
+
+    frame = S.summary_frame(model)
+
+    for p in psrs:
+        assert _row(frame, "innerrn", collection=p.name).coefficients.startswith("sampled (")
+
+
+def test_projected_timing_is_reported_projected(psr, backend):
+    """ADR 0004: a project=True GP is projected out of the kernel entirely, so
+    it is neither sampled nor marginalized."""
+    model = ds.PulsarLikelihood([
+        psr.residuals,
+        ds.makenoise_measurement(psr, psr.noisedict),
+        ds.makegp_ecorr(psr, psr.noisedict),
+        ds.makegp_timing(psr, svd=True, project=True),
+    ])
+
+    assert _row(S.summary_frame(model), "timingmodel").coefficients == "projected"
+
+
+def test_extsignal_row_is_deterministic(psrs, backend):
+    frame = S.summary_frame(R.extsignal_cw(psrs))
+    cw = frame[frame.scope == "external"]
+
+    assert len(cw) == 1
+    assert cw.iloc[0].coefficients == "deterministic"
+
+
+def test_column_is_rendered_in_text_and_html(psr, backend):
+    model = R.variable_timing(psr)
+
+    text = model.summary(show_free=False, show_fixed=False)
+    assert "coefficients" in text
+    assert "sampled (" in text and "kernel" in text
+    assert "the marginal frontend (logL) integrates every GP block analytically." in text
+
+    html = S.summary_html(model)
+    assert "<th>coefficients</th>" in html

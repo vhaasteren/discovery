@@ -49,6 +49,11 @@ class SignalInfo:
     fixed: list = field(default_factory=list)      # pinned parameter names
     handle: str | None = None              # accessor, e.g. 'signals[4]' / 'commongp'
     slices: dict | None = None             # label -> slice, for stacked bases
+    # How this block appears to the COEFFICIENT frontend (`clogL`); the marginal
+    # frontend (`logL`) integrates every GP block analytically. Derived from the
+    # assembled kernel's `.index` -- never from GP type (D3/D17). See
+    # `_coefficients_label`.
+    coefficients: str = '—'
 
 
 # --------------------------------------------------------------------------
@@ -111,7 +116,44 @@ def _prior_params(gp):
     return out
 
 
-def describe_component(obj):
+def _coefficients_label(gp, keys, assembled):
+    """The `coefficients` column for one GP row (D17).
+
+    *keys* are the GP's own coefficient-index keys; *assembled* is the set of
+    coefficient keys the applicable frontend actually samples, read off the
+    assembled kernel's `.index`. Ground truth is that index, not the GP's type:
+    `logL` marginalizes every GP, and a variable GP shadowed by
+    `concat=False` is marginalized too (§3).
+    """
+    if getattr(gp, 'project', False):
+        # ADR 0004: projected out of the kernel entirely, never a coefficient.
+        return 'projected'
+
+    keys = list(keys or [])
+    if not keys:
+        return 'marginalized'
+
+    present = [k for k in keys if k in assembled]
+    if not present:
+        return 'marginalized'
+    if len(present) == len(keys):
+        width = sum(_coeff_width(k) for k in keys)
+        return f'sampled ({width})'
+
+    missing = [k for k in keys if k not in assembled]
+    raise ValueError(
+        f"summary: GP '{_signal_name(gp)}' has some but not all of its "
+        f"coefficient keys in the assembled index — present {present}, "
+        f"missing {missing}. A GP block is either sampled whole or "
+        f"marginalized whole; this is an internal consistency error.")
+
+
+def _coeff_width(key):
+    m = _COEFF_RE.match(key)
+    return int(m.group('n')) if m else 0
+
+
+def describe_component(obj, assembled=frozenset()):
     """Map one input component to a :class:`SignalInfo` (or ``None`` to skip).
 
     Recognizes: the residual vector (data), deterministic delays, the
@@ -128,7 +170,8 @@ def describe_component(obj):
     if meas is not None:
         pars = list(meas['params']) + list(meas.get('ecorr_params', []))
         kind = 'white noise' + (' + ECORR (Sherman-Morrison)' if meas.get('ecorr') else '')
-        info = SignalInfo(meas['name'], kind, basis_shape=meas.get('ecorr_basis_shape'))
+        info = SignalInfo(meas['name'], kind, basis_shape=meas.get('ecorr_basis_shape'),
+                          coefficients='kernel')
         if meas['fixed']:
             info.fixed = pars
         else:
@@ -141,7 +184,9 @@ def describe_component(obj):
         constant = type(obj).__name__ == 'ConstantGP' or not varying
         kind = 'GP, fixed prior' if constant else 'GP, variable prior'
         return SignalInfo(_signal_name(obj), kind, basis_shape=_basis_shape(obj),
-                          varying=varying)
+                          varying=varying,
+                          coefficients=_coefficients_label(
+                              obj, getattr(obj, 'index', None) or {}, assembled))
 
     # deterministic delay (a plain callable carrying .params)
     if callable(obj):
@@ -152,7 +197,7 @@ def describe_component(obj):
     return None
 
 
-def describe_global(gp, scope='global'):
+def describe_global(gp, scope='global', assembled=frozenset()):
     """Describe a correlated common/global GP (or a compound of them).
 
     These fan a single process out over every pulsar, so identity is read from
@@ -162,7 +207,7 @@ def describe_global(gp, scope='global'):
     if isinstance(gp, list):
         out = []
         for g in gp:
-            out.extend(describe_global(g, scope))
+            out.extend(describe_global(g, scope, assembled))
         return out
 
     idx = getattr(gp, 'index', None) or {}
@@ -175,9 +220,10 @@ def describe_global(gp, scope='global'):
             continue
         sig = m.group('sig')
         n = int(m.group('n'))
-        entry = sigs.setdefault(sig, {'npsr': 0, 'n': n, 'slices': {}})
+        entry = sigs.setdefault(sig, {'npsr': 0, 'n': n, 'slices': {}, 'keys': []})
         entry['npsr'] += 1
         entry['slices'][m.group('psr')] = sli
+        entry['keys'].append(key)
 
     allpars = _prior_params(gp)            # prior params + any common mean params
     orfnames = getattr(gp, 'orfnames', None)
@@ -201,7 +247,8 @@ def describe_global(gp, scope='global'):
         out.append(SignalInfo(
             sig, kind, scope=scope,
             basis_shape=(meta['npsr'], meta['n']),
-            varying=pars, slices=meta['slices']))
+            varying=pars, slices=meta['slices'],
+            coefficients=_coefficients_label(gp, meta['keys'], assembled)))
     # restore index order (we sorted by length for attribution)
     out.sort(key=lambda s: list(sigs).index(s.name))
     # any leftover params (e.g. a combined-CRN's gw_* terms, or non-zero-mean
@@ -213,7 +260,8 @@ def describe_global(gp, scope='global'):
         else:
             out.append(SignalInfo(_signal_name(gp),
                                   'correlated GP' if scope == 'global' else 'common GP',
-                                  scope=scope, varying=leftover))
+                                  scope=scope, varying=leftover,
+                                  coefficients=_coefficients_label(gp, [], assembled)))
     return out
 
 
@@ -225,21 +273,21 @@ def describe_extsignal(ext):
     return SignalInfo(getattr(ext, 'name', 'extsignal'), 'deterministic signal',
                       scope='external',
                       varying=list(getattr(ext, 'params', []) or []),
-                      basis_shape=nbasis)
+                      basis_shape=nbasis, coefficients='deterministic')
 
 
 # --------------------------------------------------------------------------
 # collecting a whole model into signal collections
 # --------------------------------------------------------------------------
 
-def _pulsar_signals(psl):
+def _pulsar_signals(psl, assembled=frozenset()):
     """[SignalInfo] for one PulsarLikelihood, from its retained components.
 
     Each row carries its ``signals[i]`` handle — the i is the position in the
     pulsar's own ``signals`` list, so it is a live, zero-copy accessor."""
     sigs = []
     for i, obj in enumerate(getattr(psl, 'signals', [])):
-        info = describe_component(obj)
+        info = describe_component(obj, assembled)
         if info is not None and info.scope != 'data':
             info.handle = f'signals[{i}]'
             sigs.append(info)
@@ -263,31 +311,81 @@ def _psl_name(psl):
     return 'pulsar'
 
 
+def _outer_coefficient_keys(model):
+    """The coefficient keys an ArrayLikelihood's array frontend samples.
+
+    Ground truth is the assembled kernel's `.index` — `_coefficient_assembly`
+    on the metamath route, a list-of-dicts (one per pulsar) or a flat dict. The
+    legacy matrix ArrayLikelihood has no such property; it merges the same
+    per-GP `.index` dicts inside `clogL`, so fall back to that same merge. Both
+    read an index, never a GP type (D3).
+    """
+    assembly = getattr(model, '_coefficient_assembly', None)
+    if assembly is not None:
+        index = assembly[0].index
+        if isinstance(index, list):
+            return {key for d in index for key in d}
+        return set(index or {})
+
+    keys = set()
+    commongp = getattr(model, 'commongp', None)
+    gps = (commongp if isinstance(commongp, list) else [commongp]) if commongp is not None else []
+    globalgp = getattr(model, 'globalgp', None)
+    if globalgp is not None:
+        gps = list(gps) + [globalgp]
+    for g in gps:
+        keys.update(getattr(g, 'index', None) or {})
+    return keys
+
+
 def _collect(model):
     """Return (collections, commons) where *collections* is a list of
     (label, ntoa, [SignalInfo]) per pulsar and *commons* is a list of
     SignalInfo for shared/correlated/global signals."""
     collections, commons = [], []
 
-    psls = getattr(model, 'psls', None)
-    if psls is None:                       # single PulsarLikelihood
-        collections.append((_psl_name(model), _ntoa(model), _pulsar_signals(model)))
-    else:
-        for psl in psls:
-            collections.append((_psl_name(psl), _ntoa(psl), _pulsar_signals(psl)))
-
     commongp = getattr(model, 'commongp', None)
+    globalgp = getattr(model, 'globalgp', None)
+    psls = getattr(model, 'psls', None)
+
+    # Route the assembled coefficient-key set to each row (§7.1). Treatment is a
+    # property of the FRONTEND, not of a GP: `logL` marginalizes everything,
+    # `clogL` samples exactly what the assembled `.index` exposes.
+    if psls is None:
+        # single PulsarLikelihood: its own kernel's index is what clogL samples.
+        per_psr = [set(getattr(getattr(model, 'N', None), 'index', None) or {})]
+        outer = set()
+    elif commongp is None and globalgp is None:
+        # no outer assembly: ArrayLikelihood.clogL is the sum of psl.clogL, so
+        # each row compares with that pulsar's own kernel index.
+        per_psr = [set(getattr(getattr(psl, 'N', None), 'index', None) or {})
+                   for psl in psls]
+        outer = set()
+    else:
+        # an outer coefficient assembly exists: per-pulsar GPs inside each psl.N
+        # belong to the inner noise solve and are analytically marginalized by
+        # the array coefficient frontend, so their assembled key set is empty.
+        per_psr = [set() for _ in psls]
+        outer = _outer_coefficient_keys(model)
+
+    if psls is None:                       # single PulsarLikelihood
+        collections.append((_psl_name(model), _ntoa(model),
+                            _pulsar_signals(model, per_psr[0])))
+    else:
+        for psl, assembled in zip(psls, per_psr):
+            collections.append((_psl_name(psl), _ntoa(psl),
+                                _pulsar_signals(psl, assembled)))
+
     if commongp is not None:
         cg = commongp if isinstance(commongp, list) else [commongp]
         for j, g in enumerate(cg):
             handle = f'commongp[{j}]' if isinstance(commongp, list) else 'commongp'
-            for info in describe_global(g, scope='common'):
+            for info in describe_global(g, scope='common', assembled=outer):
                 info.handle = handle
                 commons.append(info)
 
-    globalgp = getattr(model, 'globalgp', None)
     if globalgp is not None:
-        for info in describe_global(globalgp, scope='global'):
+        for info in describe_global(globalgp, scope='global', assembled=outer):
             info.handle = 'globalgp'
             commons.append(info)
 
@@ -387,7 +485,7 @@ def summary(model, include_params=None, *, show_free=True, show_fixed=True,
     collections, commons = _collect(model)
     tot = _totals(collections, commons)
 
-    W = 78 + (20 if show_access else 0)
+    W = 94 + (20 if show_access else 0)
     lines = []
     title = type(model).__name__
     lines.append(f'discovery model summary   ({_backend_label()})')
@@ -403,13 +501,15 @@ def summary(model, include_params=None, *, show_free=True, show_fixed=True,
     def _emit(sigs, header, handle_prefix=''):
         lines.append(header)
         lines.append('-' * W)
-        head = f'{"signal":<22}{"kind":<34}{"basis":<14}{"free":>6}'
+        head = (f'{"signal":<22}{"kind":<34}{"basis":<14}{"free":>6}'
+                f'  {"coefficients":<14}')
         if show_access:
             head += f'  {"access":<20}'
         lines.append(head)
         lines.append('-' * W)            # F1: rule under the column header
         for s in sigs:
-            row = f'{s.name:<22}{s.kind:<34}{_shape(s):<14}{len(s.varying):>6}'
+            row = (f'{s.name:<22}{s.kind:<34}{_shape(s):<14}{len(s.varying):>6}'
+                   f'  {s.coefficients:<14}')
             if show_access:
                 acc = (handle_prefix + s.handle) if s.handle else ''
                 row += f'  {acc:<20}'
@@ -438,6 +538,10 @@ def summary(model, include_params=None, *, show_free=True, show_fixed=True,
                  f'fixed: {len(tot["fixed"])}   '
                  f'common: {len(tot["common"])}')
     lines.append(f'total basis dimension: {tot["basis"]}')
+    lines.append('coefficients: how each block appears to the coefficient '
+                 'frontend (clogL);')
+    lines.append('              the marginal frontend (logL) integrates every '
+                 'GP block analytically.')
 
     text = '\n'.join(lines)
     if to_stdout:
@@ -459,6 +563,7 @@ def summary_frame(model):
             rows.append(dict(collection=label, signal=s.name, kind=s.kind,
                              scope=s.scope, basis=s.basis_shape,
                              n_free=len(s.varying), n_fixed=len(s.fixed),
+                             coefficients=s.coefficients,
                              access=(prefix + s.handle) if s.handle else '',
                              free_params=', '.join(s.varying),
                              fixed_params=', '.join(s.fixed)))
@@ -466,10 +571,12 @@ def summary_frame(model):
         rows.append(dict(collection='(shared)', signal=s.name, kind=s.kind,
                          scope=s.scope, basis=s.basis_shape,
                          n_free=len(s.varying), n_fixed=len(s.fixed),
+                         coefficients=s.coefficients,
                          access=s.handle or '',
                          free_params=', '.join(s.varying), fixed_params=''))
     return pd.DataFrame(rows, columns=['collection', 'signal', 'kind', 'scope',
-                                       'basis', 'n_free', 'n_fixed', 'access',
+                                       'basis', 'n_free', 'n_fixed',
+                                       'coefficients', 'access',
                                        'free_params', 'fixed_params'])
 
 
@@ -493,12 +600,14 @@ def summary_html(model):
                 f'<tr><td><code>{s.name}</code></td><td>{s.kind}</td>'
                 f'<td style="text-align:right">{_shape(s)}</td>'
                 f'<td style="text-align:right">{len(s.varying)}</td>'
+                f'<td>{s.coefficients}</td>'
                 f'<td style="font-size:90%;color:#555">{params}</td></tr>')
         return ''.join(out)
 
     head = ('<tr style="text-align:left"><th>signal</th><th>kind</th>'
             '<th style="text-align:right">basis</th>'
-            '<th style="text-align:right">free</th><th>free parameters</th></tr>')
+            '<th style="text-align:right">free</th><th>coefficients</th>'
+            '<th>free parameters</th></tr>')
     blocks = [f'<b>discovery {type(model).__name__}</b> '
               f'<span style="color:#777">({_backend_label()})</span>']
     for label, ntoa, sigs in collections:
@@ -513,6 +622,11 @@ def summary_html(model):
         f'<div style="margin-top:6px;color:#444">pulsars: {len(collections)} &nbsp; '
         f'free: {len(tot["varying"])} &nbsp; fixed: {len(tot["fixed"])} &nbsp; '
         f'common: {len(tot["common"])} &nbsp; basis dim: {tot["basis"]}</div>')
+    blocks.append(
+        '<div style="margin-top:2px;color:#777;font-size:90%">'
+        '<i>coefficients</i>: how each block appears to the coefficient frontend '
+        '(<code>clogL</code>); the marginal frontend (<code>logL</code>) '
+        'integrates every GP block analytically.</div>')
     return ''.join(blocks)
 
 

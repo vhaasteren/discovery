@@ -577,6 +577,21 @@ class ArrayLikelihood(summary.SummaryMixin):
         # instead.
         self.extsignals = extsignals
 
+    # Cached properties that feed on `self.reference`. Assigning it after
+    # construction (the single-precision opt-in workflow does exactly this) must
+    # invalidate them, or the refdelta leaves would be decided by whichever
+    # property happened to be touched first — the staleness the two cached
+    # assemblies exist to prevent.
+    _REFERENCE_DEPENDENT = ('_marginal_assembly', '_coefficient_assembly',
+                            'logL', 'clogL', 'conditional', 'sample_conditional',
+                            'gsm')
+
+    def __setattr__(self, name, value):
+        if name == 'reference' and 'reference' in self.__dict__:
+            for cached in self._REFERENCE_DEPENDENT:
+                self.__dict__.pop(cached, None)
+        self.__dict__[name] = value
+
     def _freeze_reference(self, Phi):
         """Thin top layer: evaluate a GP level's prior covariance Phi at the
         reference params self.reference (theta_ref) ONCE, in float64, and return
@@ -593,28 +608,83 @@ class ArrayLikelihood(summary.SummaryMixin):
         arr = getN(self.reference) if callable(getN) else getN
         return metamath.NoiseMatrix(kh.jnp.asarray(arr))
 
+    # ---- kernel assembly (D18) --------------------------------------------
+    # Two cached helpers replace the assembly code that used to be repeated,
+    # with variations, inside `conditional` / `clogL` / `logL` / `cglogL`. The
+    # public cached properties consume these and no longer write `self.vsm` /
+    # `self.ys`: cached properties that mutate shared attributes differently
+    # depending on which one is touched first are exactly the class of bug the
+    # graph migration exists to end. Call-order invariance is tested (§10.1).
+    #
+    # Both require `self.commongp`; the no-commongp paths return early, before
+    # either is touched.
+
+    @functools.cached_property
+    def _marginal_assembly(self):
+        """(vsm, ys) for the marginalized paths (`logL`, `cglogL`,
+        `conditional`): commongp only — a globalgp is handled at the caller via
+        GlobalWoodburyKernel / make_kernelterms. `P_ref` is attached here when
+        `reference=` is set, which routes `make_kernelproduct` to the refdelta
+        twin; `make_conditional` ignores it.
+        """
+        commongp = metamath.CompoundGP(self.commongp)
+        Ns, ys = zip(*[(psl.N, psl.y) for psl in self.psls])
+
+        vsm = metamath.VectorWoodburyKernel(Ns, commongp.F, commongp.Phi)
+        vsm.index = getattr(commongp, 'index', None)
+        vsm.means = getattr(commongp, 'means', None)
+
+        # reference+delta opt-in: freeze the inner (commongp) prior at theta_ref.
+        # The kernel routes to the refdelta twin only when this leaf is present.
+        if self.reference is not None:
+            vsm.P_ref = self._freeze_reference(commongp.Phi)
+
+        return vsm, ys
+
+    @functools.cached_property
+    def _coefficient_assembly(self):
+        """(vsm, ys) for the coefficient paths (`clogL`, either form): the
+        globalgp is folded into the CompoundGP so its coefficients are sampled
+        alongside the commongp's, and the mixed-Phi prior rides along.
+
+        `reference=` is deliberately NOT consulted (§4.5): the reference+delta
+        machinery affects only the marginal paths, matching the current
+        behavior in which `clogL` never consulted it.
+        """
+        if self.globalgp is None:
+            commongp = metamath.CompoundGP(self.commongp)
+        else:
+            cgp = self.commongp if isinstance(self.commongp, list) else [self.commongp]
+            commongp = metamath.CompoundGP(cgp + [self.globalgp])
+
+        Ns, ys = zip(*[(psl.N, psl.y) for psl in self.psls])
+
+        vsm = metamath.VectorWoodburyKernel(Ns, commongp.F, commongp.Phi)
+        if hasattr(commongp, 'prior'):
+            vsm.prior = commongp.prior
+        if hasattr(commongp, 'index'):
+            vsm.index = commongp.index
+        # propagate commongp.means so the GP prior is centered on a0 when set
+        vsm.means = getattr(commongp, 'means', None)
+
+        return vsm, ys
+
     @functools.cached_property
     def conditional(self):
-        # eventually move to constructor
         if self.commongp is None or self.globalgp is not None:
             raise ValueError("ArrayLikelihood.conditional currently only works with commongp.")
 
-        if not hasattr(self, 'vsm'):
-            commongp = metamath.CompoundGP(self.commongp)
-            Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-            self.vsm = metamath.VectorWoodburyKernel(Ns, commongp.F, commongp.Phi)
-            self.vsm.index = getattr(commongp, 'index', None)
-            self.vsm.means = getattr(commongp, 'means', None)
+        vsm, ys = self._marginal_assembly
 
-        if hasattr(self.vsm, 'make_conditional'):
-            return ffunc(self.vsm.make_conditional(self.ys))
+        if hasattr(vsm, 'make_conditional'):
+            return ffunc(vsm.make_conditional(ys))
         else:
             raise NotImplementedError('No ArrayLikelihood.conditional with this setup so far.')
 
     @functools.cached_property
     def sample_conditional(self):
         cond = self.conditional
-        index = self.vsm.index
+        index = self._marginal_assembly[0].index
 
         def sample_cond(key, params):
             mu, cf = cond(params)
@@ -640,20 +710,12 @@ class ArrayLikelihood(summary.SummaryMixin):
             return loglike
         elif self.commongp is None:
             raise NotImplementedError("ArrayLikelihood does not support a globalgp without a commongp")
-        elif self.globalgp is None:
-            commongp = metamath.CompoundGP(self.commongp)
-        else:
-            cgp = self.commongp if isinstance(self.commongp, list) else [self.commongp]
-            commongp = metamath.CompoundGP(cgp + [self.globalgp])
 
-        Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-
-        # Both this line and the decentering code below assume N and F are constants.
-        self.vsm = metamath.VectorWoodburyKernel(Ns, commongp.F, commongp.Phi)
+        vsm, ys = self._coefficient_assembly
 
         if self.decenter:
             # Build a decentering reparam closure. Precomputes per-pulsar
-            # NmF / FtNmF / NmFty at trace time (constant N assumption).
+            # NmF / FtNmF / NmFty at trace time (assumes N and F are constants).
             # All metamath kernels expose `make_solve` as a graph and a
             # CompoundGP's `.F` may be either an array or a graph dict;
             # materialize each via `mm.func(...)({}, params={})`.
@@ -665,10 +727,10 @@ class ArrayLikelihood(summary.SummaryMixin):
                     return kh.jnp.asarray(metamatrix.func(F)(params={}))
                 return kh.jnp.asarray(F)
 
-            vsm_Fs = [_eval_F(F) for F in self.vsm.Fs]
-            NmFs, ldNs = zip(*[_solve_2d(N, F) for N, F in zip(self.vsm.Ns, vsm_Fs)])
+            vsm_Fs = [_eval_F(F) for F in vsm.Fs]
+            NmFs, ldNs = zip(*[_solve_2d(N, F) for N, F in zip(vsm.Ns, vsm_Fs)])
             FtNmFs = [F.T @ NmF for F, NmF in zip(vsm_Fs, NmFs)]
-            NmFtys = [NmF.T @ y for NmF, y in zip(NmFs, self.ys)]
+            NmFtys = [NmF.T @ y for NmF, y in zip(NmFs, ys)]
             FtNmF, NmFty = kh.jnparray(FtNmFs), kh.jnparray(NmFtys)
 
             def decenter_transform(params, c):
@@ -696,13 +758,6 @@ class ArrayLikelihood(summary.SummaryMixin):
                 return am + mus, ldL
             decenter_transform.params = []
 
-        if hasattr(commongp, 'prior'):
-            self.vsm.prior = commongp.prior
-        if hasattr(commongp, 'index'):
-            self.vsm.index = commongp.index
-        # propagate commongp.means so the GP prior is centered on a0 when set
-        self.vsm.means = getattr(commongp, 'means', None)
-
         # reparam stage: bijections on the GP coefficients; Jacobians compose.
         reparams = []
         if self.decenter:
@@ -711,8 +766,8 @@ class ArrayLikelihood(summary.SummaryMixin):
             reparams.extend(self.transform if isinstance(self.transform, (list, tuple))
                             else [self.transform])
 
-        loglike = self.vsm.make_kernelproduct_gpcomponent(
-            self.ys, transform=reparams, extsignals=self.extsignals)
+        loglike = vsm.make_kernelproduct_gpcomponent(
+            ys, transform=reparams, extsignals=self.extsignals)
 
         # metamath.VectorWoodburyKernel returns a graph; matrix.py still
         # returns a callable. ffunc converts a graph to a `(params) -> ...`
@@ -735,35 +790,25 @@ class ArrayLikelihood(summary.SummaryMixin):
             else:
                 raise NotImplementedError("Currently ArrayLikelihood does not support a globalgp without a commongp")
 
-        commongp = metamath.CompoundGP(self.commongp)
-
-        Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-        self.vsm = metamath.VectorWoodburyKernel(Ns, commongp.F, commongp.Phi)
-        self.vsm.index = getattr(commongp, 'index', None)
-        self.vsm.means = getattr(commongp, 'means', None)
-
-        # reference+delta opt-in: freeze the inner (commongp) prior at theta_ref.
-        # The kernel routes to the refdelta twin only when this leaf is present.
-        if self.reference is not None:
-            self.vsm.P_ref = self._freeze_reference(commongp.Phi)
+        vsm, ys = self._marginal_assembly
 
         if self.globalgp is None:
-            loglike = ffunc(self.vsm.make_kernelproduct(self.ys))
+            loglike = ffunc(vsm.make_kernelproduct(ys))
         else:
             if isinstance(self.globalgp.Phi, metamath.NoiseMatrix):
-                Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-                self.gsm = metamath.GlobalWoodburyKernel(self.vsm, self.globalgp.Fs, self.globalgp.Phi)
+                self.gsm = metamath.GlobalWoodburyKernel(vsm, self.globalgp.Fs, self.globalgp.Phi)
 
                 # reference+delta opt-in: freeze the outer (globalgp) prior too.
-                # With both inner (self.vsm.P_ref) and outer references present the
-                # fused kernel routes to the two-level refdelta twins.
+                # With both inner (vsm.P_ref, attached by _marginal_assembly) and
+                # outer references present the fused kernel routes to the
+                # two-level refdelta twins.
                 if self.reference is not None:
                     self.gsm.P_ref = self._freeze_reference(self.globalgp.Phi)
 
-                loglike = ffunc(self.gsm.make_kernelproduct(self.ys))
+                loglike = ffunc(self.gsm.make_kernelproduct(ys))
             else:
                 P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
-                kterms = self.vsm.make_kernelterms(self.ys, self.globalgp.Fs)
+                kterms = vsm.make_kernelterms(ys, self.globalgp.Fs)
 
                 npsr = len(self.globalgp.Fs)
                 ngp = self.globalgp.Fs[0].shape[1]
@@ -809,17 +854,13 @@ class ArrayLikelihood(summary.SummaryMixin):
         return loglike
 
     def cglogL(self, cgmaxiter=100, make_logdet='CG-MDL', detmatvecs=5, detsamples=200, clip=None):
-        commongp = metamath.CompoundGP(self.commongp)
-
-        Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
-        self.vsm = metamath.VectorWoodburyKernel(Ns, commongp.F, commongp.Phi)
-        self.vsm.index = getattr(commongp, 'index', None)
+        vsm, ys = self._marginal_assembly
 
         if self.globalgp is None:
-            loglike = self.vsm.make_kernelproduct(self.ys)
+            loglike = vsm.make_kernelproduct(ys)
         else:
             factors = self.globalgp.factors
-            kterms = self.vsm.make_kernelterms(self.ys, self.globalgp.Fs)
+            kterms = vsm.make_kernelterms(ys, self.globalgp.Fs)
 
             npsr = len(self.globalgp.Fs)
             ngp = self.globalgp.Fs[0].shape[1]

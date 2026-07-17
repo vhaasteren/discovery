@@ -156,12 +156,37 @@ and the checked models are the same objects.
 A real-scale check (5 pulsars, CW + HD global + decentered common RN) agrees
 between the two kernel paths to ~1e-9 relative.
 
+A parity test for `cglogL` exists (`tests/metamatrix/test_cglogl_parity.py`,
+3-pulsar fixture, `intrinsic_rn_plus_global_hd`, 3 draws, `rtol=1e-6` — loose on
+purpose, since the solve is iterative and the log-det is a stochastic estimate).
+It **skips by default**: see "cglogL is not currently runnable" below.
+
 ### Not yet cross-checked
 
-- **`cglogL`** — the conjugate-gradient log-likelihood for very large arrays
-  (CG solve + stochastic-Lanczos log-det estimator) is implemented on the
-  metamath-native path but is **not** in the comparison tests; neither path's
-  `cglogL` is currently cross-checked.
+- **`cglogL` is not currently runnable — on either route.** It was never
+  cross-checked, and investigating that (D20) turned up why: it is broken
+  independently on both paths, and the breakage predates the graph-consistency
+  cleanup.
+  - Its CG solve and Lanczos-Hutchinson log-det estimator need the *optional*
+    `jaxopt` + `matfree` extras, which are undeclared in `pyproject.toml` and
+    absent from the devcontainer. Without them `utils` defines neither helper,
+    `matrix.py` re-exports neither, and `cglogL` raises `AttributeError`
+    immediately.
+  - With `matfree` installed, the metamath route raises
+    `AttributeError: 'VectorWoodburyKernel' object has no attribute
+    'make_kernelterms'` for the globalgp branch, and returns a raw graph (never
+    `ffunc`-wrapped) for the commongp-only branch — so metamath `cglogL` has
+    never worked.
+  - The matrix route's commongp-only branch does work; its globalgp branch dies
+    inside the CG stack on a JAX API change (`matrix_transpose` now rejects 1-D
+    input). `matfree`'s own API has also drifted (`funm.integrand_funm_sym` is
+    gone at 0.6.x; `utils` targets ~0.5.x).
+
+  Making `cglogL` work again is real repair work — a `make_kernelterms` on
+  `VectorWoodburyKernel`, an `ffunc` wrap, a JAX-compat fix, and a pinned
+  `matfree` extra — and is deliberately out of scope for the cleanup. The parity
+  test is committed and skips on the missing extras, so it starts enforcing
+  parity the moment the path is repaired.
 - **Performance.** The comparison-test suite checks correctness, not speed — there
   is no general `matrix.py`-vs-metamath timing comparison. (The single-precision
   work *does* have an HD-model benchmark: matrix vs metamath, `float64` vs `float32`;
@@ -236,6 +261,18 @@ and routing reference+delta for the single-level (CURN/IRN) `vectorwoodbury` pat
   to metamath-only, drop the test monkeypatch, and rename `likelihood_metamath.py`
   → `likelihood.py`. That's deliberately held until the metamath path has been
   exercised on real analyses (this review is part of that).
+- **Known limitation — single-level refdelta routing is HD-only.** The
+  reference+delta opt-in (`ArrayLikelihood(reference=...)`) reaches the
+  single-level (CURN/IRN) case only through the current
+  `vectorwoodbury_refdelta` twin; carrying it to `vectorwoodbury` proper is
+  future work, tracked as an issue. This is by design of the existing twins and
+  is deliberately **not** addressed by the graph-consistency cleanup.
+- **Known limitation — chained variable GPs on the legacy route.**
+  `PulsarLikelihood(concat=False, marginalize_all_but_last=True)` builds on both
+  routes, but its `clogL` evaluates only under `kernels='metamath'`:
+  `matrix.WoodburyKernel_varNP` reaches for `make_solve_1d` on its inner
+  `WoodburyKernel_varP`, which does not define it. The matrix path is frozen for
+  Phase 5 deletion, so this is recorded rather than fixed.
 
 The step-by-step plan and the conditions for each step are in
 [`dev_architecture/metamatrix/exit_plan.md`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/dev_architecture/metamatrix/exit_plan.md).

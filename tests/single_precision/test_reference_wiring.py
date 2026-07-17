@@ -114,16 +114,18 @@ def test_optin_gate(psrs, recipe):
         # reference=None: opt-in OFF on every kernel.
         m = recipe(psrs)
         m.logL  # build the kernels
-        assert getattr(m.vsm, "P_ref", None) is None
+        # the marginal kernel assembly is the ground truth; ArrayLikelihood no
+        # longer publishes it as a `self.vsm` side effect (D18).
+        assert getattr(m._marginal_assembly[0], "P_ref", None) is None
         if getattr(m, "gsm", None) is not None:
             assert getattr(m.gsm, "P_ref", None) is None
 
-        # reference set: opt-in ON, frozen f64 covariance leaves.
+        # reference set: opt-in ON, frozen f64 covariance leaves. Assigning
+        # `reference` invalidates the cached assemblies, so the rebuild below
+        # sees it.
         rd = recipe(psrs)
         rd.reference = _draw(rd.logL.params, 0)
-        # re-trigger kernel construction with the reference present
-        del rd.__dict__["logL"]
         rd.logL
-        assert isinstance(rd.vsm.P_ref, metamath.NoiseMatrix)
+        assert isinstance(rd._marginal_assembly[0].P_ref, metamath.NoiseMatrix)
         if getattr(rd, "gsm", None) is not None:
             assert isinstance(rd.gsm.P_ref, metamath.NoiseMatrix)
