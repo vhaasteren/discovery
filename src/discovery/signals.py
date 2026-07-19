@@ -902,6 +902,144 @@ def make_powerlaw(*, gamma=None, scale=1.0, low_clip=-18.0, high_clip=-9.0):
 powerlaw = make_powerlaw()
 
 
+# ---------------------------------------------------------------------------
+# Pivot-amplitude power-law parameterization (feature §11.1)
+# ---------------------------------------------------------------------------
+
+import dataclasses as _dataclasses  # noqa: E402
+
+
+@_dataclasses.dataclass(frozen=True)
+class PowerLawParameterization:
+    r"""Amplitude/slope parameterization for a power-law GP (§11.1).
+
+    The standard ``make_powerlaw`` samples ``log10_A`` at the fixed reference
+    frequency ``f_ref = 1/yr``, where the amplitude and slope ``gamma`` are
+    strongly correlated. Sampling the amplitude at a *pivot* frequency
+    ``f_pivot`` near the data's sensitivity peak decorrelates them:
+
+    .. math::
+
+        \log_{10} A_{\rm ref} = \log_{10} A_{\rm pivot}
+            + \tfrac12\, \gamma\, \log_{10}(f_{\rm pivot} / f_{\rm ref}).
+
+    The map ``(log10_A_pivot, gamma) -> (log10_A_ref, gamma)`` is affine with unit
+    Jacobian determinant, so it needs no density correction. ``amplitude_reference_frequency``
+    is where the decoded/displayed ``log10_A`` is reported (``1/yr``, matching the
+    PSD's internal reference). ``slope_pivot_frequency`` is either an explicit
+    frequency in Hz or ``"sensitivity_weighted"`` (resolved once from the fixed
+    reference-noise metric via :func:`sensitivity_weighted_pivot_frequency`).
+    """
+
+    amplitude_reference_frequency: float = const.fyr
+    slope_pivot_frequency: "float | typing.Literal['sensitivity_weighted']" = (
+        "sensitivity_weighted"
+    )
+
+    def resolve_pivot_frequency(self, *, freqs=None, weights=None) -> float:
+        """Return the concrete pivot frequency in Hz.
+
+        For ``"sensitivity_weighted"`` the per-frequency ``freqs`` (Hz) and their
+        sensitivity ``weights`` are required; an explicit numeric pivot is
+        returned as-is.
+        """
+        spf = self.slope_pivot_frequency
+        if isinstance(spf, str):
+            if spf != "sensitivity_weighted":
+                raise ValueError(
+                    f"slope_pivot_frequency must be a float or "
+                    f"'sensitivity_weighted'; got {spf!r}")
+            if freqs is None or weights is None:
+                raise ValueError(
+                    "the 'sensitivity_weighted' pivot needs freqs and weights "
+                    "from the fixed reference-noise metric")
+            return sensitivity_weighted_pivot_frequency(freqs, weights)
+        return float(spf)
+
+
+def sensitivity_weighted_pivot_frequency(freqs, weights) -> float:
+    r"""Sensitivity-weighted geometric-mean pivot frequency (§11.1).
+
+    .. math:: \log f_{\rm pivot} = \frac{\sum_j w_j \log f_j}{\sum_j w_j}
+
+    ``freqs`` (Hz) and ``weights`` are per-frequency (one entry per sine/cosine
+    pair). Weights come from :func:`fourier_sensitivity_weights`.
+    """
+    f = np.asarray(freqs, dtype=np.float64)
+    w = np.asarray(weights, dtype=np.float64)
+    if f.shape != w.shape or f.ndim != 1:
+        raise ValueError("freqs and weights must be 1-D arrays of equal length")
+    wsum = float(np.sum(w))
+    if not wsum > 0.0:
+        raise ValueError("sensitivity weights must sum to a positive value")
+    return float(np.exp(np.sum(w * np.log(f)) / wsum))
+
+
+def fourier_sensitivity_weights(fmat, reference_noise) -> np.ndarray:
+    r"""Per-frequency sensitivity weights ``w_j = tr(F_j^T N0^-1 F_j)`` (§11.1).
+
+    ``fmat`` is a discovery Fourier basis ``(n_toa, 2C)`` with sine/cosine pairs
+    ordered ``[sin f1, cos f1, sin f2, cos f2, ...]``; ``F_j`` is columns
+    ``[2j, 2j+1]``. ``reference_noise`` is a frozen reference-noise operator
+    (``.solve(rhs) -> (N0^-1 rhs, logdet)``), so the weights use the exact frozen
+    ``N0`` rather than live noise parameters.
+    """
+    F = np.asarray(fmat, dtype=np.float64)
+    if F.ndim != 2 or F.shape[1] % 2 != 0:
+        raise ValueError("fmat must be (n_toa, 2C) with sine/cosine pairs")
+    N0invF, _ = reference_noise.solve(F)
+    per_col = np.einsum("ij,ij->j", F, np.asarray(N0invF, dtype=np.float64))
+    return per_col[0::2] + per_col[1::2]
+
+
+def reference_log10_amplitude(log10_A_pivot, gamma, *, f_pivot,
+                              parameterization=None):
+    """Convert a sampled ``log10_A_pivot`` to ``log10_A`` at the reference
+    frequency (§11.1); used to decode/display amplitudes at ``1/yr``."""
+    if parameterization is None:
+        parameterization = PowerLawParameterization()
+    f_ref = float(parameterization.amplitude_reference_frequency)
+    shift = 0.5 * _math.log10(float(f_pivot) / f_ref)
+    return log10_A_pivot + gamma * shift
+
+
+def make_powerlaw_pivot(*, f_pivot, parameterization=None, gamma=None,
+                        scale=1.0, low_clip=-18.0, high_clip=-9.0):
+    r"""Pivot-amplitude power-law PSD factory (§11.1).
+
+    Identical spectral form to :func:`make_powerlaw`, but the sampled amplitude
+    ``log10_A_pivot`` is defined at ``f_pivot`` rather than the reference
+    frequency. The returned function's amplitude argument is named
+    ``log10_A_pivot`` (unambiguous public parameter name); decode the reference
+    amplitude with :func:`reference_log10_amplitude`.
+
+    Returns ``powerlaw(f, df, log10_A_pivot[, gamma])``.
+    """
+    if parameterization is None:
+        parameterization = PowerLawParameterization()
+    f_ref = float(parameterization.amplitude_reference_frequency)
+    shift = 0.5 * _math.log10(float(f_pivot) / f_ref)  # log10_A_ref = A_pivot + gamma*shift
+    _s2 = 2.0 * _math.log10(scale)
+
+    if gamma is None:
+        def powerlaw(f, df, log10_A_pivot, gamma):
+            log10_A = log10_A_pivot + gamma * shift
+            log10_phi = (2.0 * log10_A + (gamma - 3.0) * _LOG10_FYR
+                         - gamma * jnp.log10(f) + jnp.log10(df) + _LOG10_NORM + _s2)
+            return utils.to_working(10.0 ** jnp.clip(log10_phi, low_clip, high_clip))
+    else:
+        _g = float(gamma)
+        _shift_g = _g * shift
+        _g_term = (_g - 3.0) * _LOG10_FYR
+        def powerlaw(f, df, log10_A_pivot):
+            log10_A = log10_A_pivot + _shift_g
+            log10_phi = (2.0 * log10_A + _g_term
+                         - _g * jnp.log10(f) + jnp.log10(df) + _LOG10_NORM + _s2)
+            return utils.to_working(10.0 ** jnp.clip(log10_phi, low_clip, high_clip))
+
+    return powerlaw
+
+
 def make_brokenpowerlaw(*, gamma=None, scale=1.0, low_clip=-18.0, high_clip=-9.0):
     r"""Broken power-law PSD factory.
 
