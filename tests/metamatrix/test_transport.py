@@ -507,6 +507,24 @@ def test_frozen_measurement_reference_diagonal_is_finite_positive(
     assert np.isfinite(float(transport.reference_noise_quadratic(v)))
 
 
+def test_fourier_sensitivity_weights_with_frozen_reference_noise(
+        psr, metamath_backend):
+    """The pivot sensitivity weights (feature §11.1) run against a real frozen
+    measurement-noise reference and a real Fourier basis, not a toy solver."""
+    from discovery import signals as sig
+
+    f, _df, fmat = sig.fourierbasis(psr, 5)
+    ref = tr.reference_noise_frozen(
+        ds.makenoise_measurement(psr, psr.noisedict), psr.noisedict)
+    w = sig.fourier_sensitivity_weights(fmat, ref)
+    assert w.shape == (5,)
+    assert np.all(np.isfinite(w)) and np.all(w > 0.0)
+    # The sensitivity-weighted pivot lands inside the sampled frequency band.
+    freqs = np.asarray(f)[0::2]
+    f_pivot = sig.sensitivity_weighted_pivot_frequency(freqs, w)
+    assert freqs.min() <= f_pivot <= freqs.max()
+
+
 def test_matrix_mode_transport_construction_raises(psr):
     ds.config(kernels="matrix")
     try:
