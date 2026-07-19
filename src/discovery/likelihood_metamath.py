@@ -236,6 +236,19 @@ class PulsarLikelihood(summary.SummaryMixin):
         return ffunc(self.N.make_kernelproduct(self.y))
 
 
+    @property
+    def sampled_gps(self):
+        """Variable GP signals whose coefficients are sampled in `clogL`.
+
+        The transport builder (`discovery.transport.gp_block`) consumes each
+        one's `.F`, `.Phi`, and `.index`. Global (`gpname == 'gw'`) GPs are
+        excluded: their cross-pulsar prior is assembled at array scale, not as a
+        per-pulsar diagonal block here.
+        """
+        return [g for g in self.signals
+                if isinstance(g, kh.VariableGP)
+                and getattr(g, 'gpname', None) != 'gw']
+
     @functools.cached_property
     def sample(self):
         if callable(self.y):

@@ -759,3 +759,130 @@ def test_array_transport_fingerprint_is_stable(psrs, metamath_backend):
                              for i, p in enumerate(psrs)])
     assert at1.fingerprint().startswith("sha256:")
     assert at1.fingerprint() == at2.fingerprint()
+
+
+# ==========================================================================
+# PR5b extensions (§5.10, D25): array_block, ExtSignal centering, softclip
+# ==========================================================================
+
+
+class _FakeExtSignal:
+    """Minimal ExtSignal duck for center_extsignals tests: .Fs, .coeffs, .name."""
+
+    def __init__(self, Fs, kext, name="cw"):
+        self.Fs, self.name = Fs, name
+
+        def coeffs(params):
+            return kh.jnp.asarray(
+                [[params[f"{name}_c{j}"] for j in range(kext)] for _ in Fs])
+
+        coeffs.params = [f"{name}_c{j}" for j in range(kext)]
+        self.coeffs = coeffs
+
+
+def test_array_block_precision_specs(psr, metamath_backend):
+    F = np.asarray(psr.residuals)[:, None] * np.array([[1.0, 0.5, -0.3]])
+    # scalar broadcast
+    b = tr.array_block(F, {"tim": slice(0, 3)}, 2.0, name="timing")
+    assert b.name == "timing"
+    assert list(b.index) == ["tim"]
+    assert np.allclose(np.asarray(b.conditioner_precision({})), 2.0)
+    assert b.conditioner_precision.params == []
+    # (k,) vector
+    b2 = tr.array_block(F, {"tim": slice(0, 3)}, [1.0, 2.0, 3.0])
+    assert np.allclose(np.asarray(b2.conditioner_precision({})), [1.0, 2.0, 3.0])
+    # callable with .params
+
+    def cp(params):
+        return kh.jnp.asarray([params["s"]] * 3)
+
+    cp.params = ["s"]
+    b3 = tr.array_block(F, {"tim": slice(0, 3)}, cp)
+    assert b3.conditioner_precision.params == ["s"]
+    assert np.allclose(np.asarray(b3.conditioner_precision({"s": 4.0})), 4.0)
+
+
+def test_array_block_validation(psr, metamath_backend):
+    F = np.asarray(psr.residuals)[:, None] * np.array([[1.0, 0.5]])
+    with pytest.raises(ValueError, match="one-key dict"):
+        tr.array_block(F, {"a": slice(0, 2), "b": slice(0, 2)}, 1.0)
+    with pytest.raises(ValueError, match=r"slice\(0, 2\)"):
+        tr.array_block(F, {"a": slice(0, 1)}, 1.0)
+    with pytest.raises(ValueError, match="non-finite or negative"):
+        tr.array_block(F, {"a": slice(0, 2)}, [-1.0, 1.0])
+    Fbad = np.asarray(psr.residuals)[:, None] * np.array([[1.0, 0.0]])
+    with pytest.raises(ValueError, match="zero or non-finite"):
+        tr.array_block(Fbad, {"a": slice(0, 2)}, 1.0)
+
+
+def test_extsignal_subtracted_centering_matches_manual(psr, metamath_backend):
+    r0 = np.asarray(psr.residuals, dtype=float)
+    ntoa = r0.shape[0]
+    F = r0[:, None] * np.array([[1.0, 0.5, -0.3]])
+    rng = np.random.default_rng(3)
+    Fext = rng.standard_normal((ntoa, 2))
+    es = _FakeExtSignal([Fext], 2, name="cw")
+    ref = _diag_ref(psr)
+
+    t = tr.Transport([tr.array_block(F, {"tim": slice(0, 3)}, 1.0, name="timing")],
+                     reference_noise=ref, reference_residual=r0, center=True,
+                     center_extsignals=[es], psr_slot=0)
+    assert set(["cw_c0", "cw_c1"]).issubset(set(t.params))
+
+    params = {"cw_c0": 0.7, "cw_c1": -0.3}
+    q, _ = t.apply(params, kh.jnp.zeros(3))
+
+    n0 = np.asarray(psr.toaerrs) ** 2
+    A = F.T @ (F / n0[:, None]) + np.eye(3)
+    b0 = F.T @ (r0 / n0)
+    E0 = F.T @ (Fext / n0[:, None])
+    mu = np.linalg.solve(A, b0 - E0 @ np.array([0.7, -0.3]))
+    assert np.allclose(np.asarray(q), mu)
+    assert t.diagnostics()["center_extsignals"] == ["cw"]
+
+
+def test_softclip_clamps_centering_slice(psr, metamath_backend):
+    r0 = np.asarray(psr.residuals, dtype=float)
+    F = r0[:, None]                                   # 1-column, near-collinear
+    ref = _diag_ref(psr)
+    # A pathological reference residual drives mu far outside [-4, 4].
+    big = np.zeros_like(r0)
+    big[0] = 1e6
+    t = tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1e-10, name="timing")],
+                     reference_noise=ref, reference_residual=big, center=True,
+                     softclip={"timing": 4.0})
+    q, _ = t.apply({}, kh.jnp.zeros(1))
+    assert abs(float(np.asarray(q)[0])) <= 4.0 + 1e-9
+    assert t.diagnostics()["softclip"] == {"timing": 4.0}
+
+
+def test_softclip_and_extsignals_require_center(psr, metamath_backend):
+    F = np.asarray(psr.residuals)[:, None]
+    ref = _diag_ref(psr)
+    with pytest.raises(ValueError, match="softclip requires center"):
+        tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
+                     reference_noise=ref, center=False, softclip={"timing": 4.0})
+    es = _FakeExtSignal([np.asarray(psr.residuals)[:, None]], 1)
+    with pytest.raises(ValueError, match="center_extsignals requires center"):
+        tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0)],
+                     reference_noise=ref, center=False, center_extsignals=[es])
+
+
+def test_softclip_unknown_block_raises(psr, metamath_backend):
+    F = np.asarray(psr.residuals)[:, None]
+    ref = _diag_ref(psr)
+    with pytest.raises(ValueError, match="unknown block 'nope'"):
+        tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
+                     reference_noise=ref, reference_residual=np.asarray(psr.residuals),
+                     center=True, softclip={"nope": 4.0})
+
+
+def test_array_transport_rejects_extsignals_and_softclip(psr, metamath_backend):
+    r0 = np.asarray(psr.residuals, dtype=float)
+    F = r0[:, None]
+    ref = _diag_ref(psr)
+    t = tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
+                     reference_noise=ref, reference_residual=r0, center=True,
+                     softclip={"timing": 4.0})
+    with pytest.raises(ValueError, match="does not support"):
+        tr.ArrayTransport([t])
