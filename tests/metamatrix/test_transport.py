@@ -454,6 +454,59 @@ def test_non_metamath_kernel_to_frozen_raises_typeerror(psr):
         ds.config(kernels="matrix")
 
 
+def test_reference_noise_diagonal_quadratic_and_std(psr, metamath_backend):
+    """The diagonal TOA-error reference exposes an exact diag(N0), and the
+    transport's N0^-1 quadratic and sqrt(diag(N0)) helpers agree with it
+    (feature §8.3, geometry certifier support)."""
+    ref = tr.reference_noise(psr)
+    n0 = np.asarray(psr.toaerrs, dtype=np.float64) ** 2
+    assert np.allclose(np.asarray(ref.diagonal()), n0)
+
+    F = np.asarray(psr.residuals)[:, None]
+    transport = tr.Transport(
+        [_const_block(F, [1.0])], reference_noise=ref, center=False)
+    n_toa = n0.shape[0]
+    v = np.linspace(-1.0, 1.0, n_toa) * 1e-6
+    assert np.isclose(float(transport.reference_noise_quadratic(v)),
+                      float(v @ (v / n0)))
+    assert np.allclose(
+        np.asarray(transport.reference_noise_standard_deviation()), np.sqrt(n0))
+
+
+def test_frozen_kernel_diagonal_adds_ecorr_exposure(metamath_backend):
+    """diag(N0) for a Sherman-Morrison ECORR reference is diag(N) + F P F^T's
+    diagonal (F is 0/1 exposure, so it adds F P epoch-wise)."""
+    from discovery import metamath as mm
+
+    N = np.array([1.0, 2.0, 3.0, 4.0])
+    F = np.array([[1, 0], [1, 0], [0, 1], [0, 1]], dtype=np.float64)
+    P = np.array([10.0, 20.0])
+    kernel = mm.NoiseMatrixSM(kh.jnparray(N), F, kh.jnparray(P))
+    diag = tr._frozen_kernel_diagonal(kernel, {})
+    assert np.allclose(diag, N + F @ P)
+
+
+def test_frozen_measurement_reference_diagonal_is_finite_positive(
+        psr, metamath_backend):
+    """A frozen measurement-noise reference (real EFAC/EQUAD/ECORR at the
+    noisedict) yields a strictly positive finite diag(N0) of TOA length, and
+    the transport's quadratic/std helpers stay finite."""
+    kernel = ds.makenoise_measurement(psr, psr.noisedict)
+    ref = tr.reference_noise_frozen(kernel, params0=psr.noisedict)
+    diag = np.asarray(ref.diagonal())
+    n_toa = np.asarray(psr.toaerrs).shape[0]
+    assert diag.shape == (n_toa,)
+    assert np.all(np.isfinite(diag)) and np.all(diag > 0.0)
+
+    F = np.asarray(psr.residuals)[:, None]
+    transport = tr.Transport(
+        [_const_block(F, [1.0])], reference_noise=ref, center=False)
+    std = np.asarray(transport.reference_noise_standard_deviation())
+    assert np.allclose(std, np.sqrt(diag))
+    v = np.linspace(-1.0, 1.0, n_toa) * 1e-6
+    assert np.isfinite(float(transport.reference_noise_quadratic(v)))
+
+
 def test_matrix_mode_transport_construction_raises(psr):
     ds.config(kernels="matrix")
     try:
