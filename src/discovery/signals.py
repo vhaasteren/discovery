@@ -210,6 +210,27 @@ def makegp_timing(psr, constant=None, variance=None, svd=False, scale=1.0, varia
 
     return makegp_improper(psr, fmat, constant=constant, name='timingmodel', variable=variable, project=project)
 
+def makegp_standard_normal(psr, basis, name='standardnormalGP'):
+    """Proper GP with an identity (unit-normal) coefficient prior on `basis`.
+
+    Unlike makegp_improper (constant=1e40 improper/flat), this is a genuinely
+    proper ConstantGP whose coefficient covariance is exactly ones(k): its
+    coefficients c ~ Normal(0, I), and its log-determinant is retained. No
+    projection and no column normalization -- the caller passes the unnormalized
+    basis (e.g. a prior-normal z Jacobian) whose unit coefficient variance is the
+    physical prior.
+    """
+    fmat = np.asarray(basis, dtype=np.float64)
+    if fmat.ndim != 2:
+        raise ValueError("makegp_standard_normal basis must be 2-D (n_toa, k)")
+    k = fmat.shape[1]
+    gp = utils.ConstantGP(kernels.NoiseMatrix1D_novar(np.ones(k)), fmat)
+    gp.index = {f'{psr.name}_{name}_coefficients({k})': slice(0, k)}
+    gp.name = psr.name
+    gp.gpname = name
+    gp.project = False
+    return gp
+
 
 # Fourier GP
 
