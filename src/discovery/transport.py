@@ -1046,5 +1046,14 @@ class MarginalTransport:
 
 
 def marginal_transport(kernel, y, block, *, center=True):
-    """Public factory for :class:`MarginalTransport` (D1). See its docstring."""
+    """Public factory for :class:`MarginalTransport` (D1). See its docstring.
+
+    ``kernel`` MUST be the assembled marginalized ``PulsarLikelihood.N`` (a
+    metamath Woodbury *stack* exposing ``make_kernelsolve``) — the object whose
+    ``C(params) = N0 + F Phi(params) F^T`` folds white noise together with the
+    RN/DM and marginalized-timing GP priors. A bare white-noise leaf
+    (``metamath.NoiseMatrix``) has no ``make_kernelsolve`` and is rejected with a
+    ``TypeError``; do not "simplify" to the WN kernel — the eta-dependence of the
+    transport lives entirely in the folded GP priors.
+    """
     return MarginalTransport(kernel, y, block, center=center)

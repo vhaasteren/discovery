@@ -1188,3 +1188,26 @@ def test_marginal_transport_live_kernel_hooks(metamath_backend):
     eta = _eta(toy["eta_names"], rng)
     with pytest.raises(ValueError, match="shape"):
         t.live_kernel_quadratic(eta, np.ones(n + 1))
+
+
+def test_live_kernel_diagonal_type_dispatch(metamath_backend):
+    """T-D6 (type dispatch): WoodburyProjKernel -> NotImplementedError (D22),
+    an unsupported kernel type -> TypeError."""
+    from discovery.transport import _live_kernel_diagonal
+
+    rng = np.random.default_rng(7)
+    n = 20
+    psr = _MockPsr(n)
+    gp_rn = ds.makegp_fourier(psr, ds.powerlaw, 3, name="rednoise")
+    eta = {p: (-0.5 if "log10_A" in p else 3.0) for p in gp_rn.Phi.N.params}
+
+    proj = metamath.WoodburyProjKernel(
+        metamath.NoiseMatrix(kh.jnparray(rng.uniform(0.5, 1.5, n))),
+        rng.standard_normal((n, 2)),   # M (timing, projected out)
+        np.asarray(gp_rn.F),           # F (GP basis, kept)
+        gp_rn.Phi,                     # P
+    )
+    with pytest.raises(NotImplementedError, match="WoodburyProjKernel|D22|projection"):
+        _live_kernel_diagonal(proj, eta)
+    with pytest.raises(TypeError, match="unsupported kernel type"):
+        _live_kernel_diagonal(object(), eta)
