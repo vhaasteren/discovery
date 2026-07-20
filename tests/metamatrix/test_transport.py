@@ -957,3 +957,234 @@ def test_array_transport_rejects_extsignals_and_softclip(psr, metamath_backend):
                      softclip={"timing": 4.0})
     with pytest.raises(ValueError, match="does not support"):
         tr.ArrayTransport([t])
+
+
+# ==========================================================================
+# MarginalTransport (feature_marginalized_dynamic_decentering §4 / §11.1)
+# ==========================================================================
+
+from discovery import metamath  # noqa: E402
+
+
+class _MockPsr:
+    """Minimal pulsar for the GP signal factories (name / pos / toas)."""
+
+    name = "J0000+0000"
+
+    def __init__(self, n, span_days=3000.0):
+        self.toas = 53000.0 * 86400.0 + np.linspace(0.0, span_days * 86400.0, n)
+        self.pos = np.array([1.0, 0.0, 0.0])
+
+
+def _build_toy_marginal(rng, n=40, comps=3):
+    """Fold WN + powerlaw RN + improper timing (1e40) + unit-normal z-prior into
+    one metamath WoodburyKernel stack (exactly the shape of a marginalized
+    ``PulsarLikelihood.N``), plus the pieces for an independent NumPy oracle."""
+    psr = _MockPsr(n)
+    n0 = rng.uniform(0.5, 1.5, n)
+    gp_rn = ds.makegp_fourier(psr, ds.powerlaw, comps, name="rednoise")
+    gp_imp = ds.makegp_improper(psr, rng.standard_normal((n, 2)), name="tm")
+    gp_sn = ds.makegp_standard_normal(psr, rng.standard_normal((n, 2)), name="zprior")
+
+    K = metamath.NoiseMatrix(kh.jnparray(n0))
+    Fs, Phis = [], []
+    for gp in (gp_rn, gp_imp, gp_sn):
+        F = np.asarray(gp.F, dtype=np.float64)
+        K = metamath.WoodburyKernel(K, kh.jnparray(F), gp.Phi)
+        Fs.append(F)
+        Phis.append(gp.Phi)
+    F_all = np.concatenate(Fs, axis=1)
+
+    def phi_of(eta):
+        out = []
+        for Ph in Phis:
+            c, f = metamath._materialize(Ph.N)
+            out.append(np.asarray(c if f is None else f(params=eta), dtype=np.float64))
+        return np.concatenate(out)
+
+    eta_names = list(gp_rn.Phi.N.params)  # powerlaw log10_A / gamma
+    return dict(n0=n0, K=K, F_all=F_all, phi_of=phi_of, eta_names=eta_names)
+
+
+def _eta(names, rng):
+    out = {}
+    for nm in names:
+        out[nm] = float(rng.uniform(-1.0, 0.0)) if "log10_A" in nm else float(rng.uniform(1.5, 5.0))
+    return out
+
+
+def _oracle_products(n0, F_all, phi, W, y):
+    """Independent NumPy Woodbury: (W^T C^-1 W, W^T C^-1 y) for
+    C = diag(n0) + F diag(phi) F^T. Stable with a 1e40 improper entry
+    (Phi^-1 -> 1e-40), unlike a dense inverse of C."""
+    Ninv = 1.0 / n0
+    NiF = Ninv[:, None] * F_all
+    NiW = Ninv[:, None] * W
+    Niy = Ninv * y
+    inner = np.diag(1.0 / phi) + F_all.T @ NiF
+    cfa = np.linalg.cholesky(inner)
+
+    def isolve(rhs):
+        return np.linalg.solve(cfa.T, np.linalg.solve(cfa, rhs))
+
+    WtNiF = W.T @ NiF
+    WtCiW = W.T @ NiW - WtNiF @ isolve(F_all.T @ NiW)
+    WtCiy = W.T @ Niy - WtNiF @ isolve(F_all.T @ Niy)
+    return WtCiW, WtCiy
+
+
+def _oracle_quadratic(n0, F_all, phi, v):
+    Ninv = 1.0 / n0
+    Niv = Ninv * v
+    NiF = Ninv[:, None] * F_all
+    inner = np.diag(1.0 / phi) + F_all.T @ NiF
+    cfa = np.linalg.cholesky(inner)
+    FtNiv = F_all.T @ Niv
+    return float(v @ Niv - FtNiv @ np.linalg.solve(cfa.T, np.linalg.solve(cfa, FtNiv)))
+
+
+def _make_block(W):
+    key = f"{_MockPsr.name}_timing_timing_z"
+    return tr.array_block(W, {key: slice(0, W.shape[1])},
+                          conditioner_precision=1.0, name="timing"), key
+
+
+def test_marginal_transport_matches_dense_oracle(metamath_backend):
+    """T-D1: A(eta) and mu(eta) from MarginalTransport._factor match the
+    independent Woodbury oracle W^T C^-1 W + I / A^-1 W^T C^-1 y at 5 eta draws."""
+    rng = np.random.default_rng(0)
+    toy = _build_toy_marginal(rng)
+    n = toy["n0"].shape[0]
+    W = rng.standard_normal((n, 3))
+    y = rng.standard_normal(n)
+    block, _ = _make_block(W)
+    t = tr.marginal_transport(toy["K"], y, block, center=True)
+
+    for _ in range(5):
+        eta = _eta(toy["eta_names"], rng)
+        phi = toy["phi_of"](eta)
+        WtCiW, WtCiy = _oracle_products(toy["n0"], toy["F_all"], phi, W, y)
+        A_o = WtCiW + np.eye(3)
+        mu_o = np.linalg.solve(A_o, WtCiy)
+
+        cf, b, pinv = t._factor(eta)
+        A_t = np.asarray(cf[0]) @ np.asarray(cf[0]).T  # L L^T (lower factor)
+        mu_t = np.asarray(t.apply(eta, np.zeros(3))[0])
+        assert np.allclose(A_t, A_o, rtol=1e-8, atol=1e-10)
+        assert np.allclose(np.asarray(b), WtCiy, rtol=1e-8, atol=1e-10)
+        assert np.allclose(mu_t, mu_o, rtol=1e-8, atol=1e-10)
+
+
+def test_marginal_transport_jacobian_matches_ldj(metamath_backend):
+    """T-D2: jacfwd slogdet of z(xi) equals ldJ, center on and off."""
+    import jax.numpy as jnp
+    rng = np.random.default_rng(1)
+    toy = _build_toy_marginal(rng)
+    n = toy["n0"].shape[0]
+    W = rng.standard_normal((n, 3))
+    block, _ = _make_block(W)
+    eta = _eta(toy["eta_names"], rng)
+    for center in (True, False):
+        t = tr.marginal_transport(toy["K"], rng.standard_normal(n), block, center=center)
+        jac = np.asarray(jax.jacfwd(lambda xi: t.apply(eta, xi)[0])(jnp.zeros(3)))
+        _, sld = np.linalg.slogdet(jac)
+        ldJ = float(t.apply(eta, jnp.zeros(3))[1])
+        assert np.isclose(sld, ldJ, rtol=1e-10, atol=1e-10)
+
+
+def test_marginal_transport_params_propagation(metamath_backend):
+    """T-D3: t.params == union of kernel hyper names and block conditioner params."""
+    rng = np.random.default_rng(2)
+    toy = _build_toy_marginal(rng)
+    n = toy["n0"].shape[0]
+    block, _ = _make_block(rng.standard_normal((n, 3)))
+    t = tr.marginal_transport(toy["K"], rng.standard_normal(n), block)
+    assert t.params == sorted(set(toy["eta_names"]) | set(block.conditioner_precision.params))
+    assert set(toy["eta_names"]).issubset(set(t.params))
+
+
+def test_marginal_transport_centering_is_gls_solution(metamath_backend):
+    """T-D4: mu(eta) equals the dense GLS solution A^-1 W^T C^-1 y (pins b sign
+    and the y_t waveform convention)."""
+    rng = np.random.default_rng(3)
+    toy = _build_toy_marginal(rng)
+    n = toy["n0"].shape[0]
+    W = rng.standard_normal((n, 3))
+    y = rng.standard_normal(n)
+    block, _ = _make_block(W)
+    t = tr.marginal_transport(toy["K"], y, block, center=True)
+    eta = _eta(toy["eta_names"], rng)
+    WtCiW, WtCiy = _oracle_products(toy["n0"], toy["F_all"], toy["phi_of"](eta), W, y)
+    gls = np.linalg.solve(WtCiW + np.eye(3), WtCiy)
+    mu = np.asarray(t.apply(eta, np.zeros(3))[0])
+    assert np.allclose(mu, gls, rtol=1e-8, atol=1e-10)
+
+
+def test_marginal_transport_failure_semantics(metamath_backend):
+    """T-D5: callable y, kernel without make_kernelsolve, multi-key block,
+    matrix mode, and negative conditioner precision each fail as specified."""
+    rng = np.random.default_rng(4)
+    toy = _build_toy_marginal(rng)
+    n = toy["n0"].shape[0]
+    block, _ = _make_block(rng.standard_normal((n, 3)))
+    y = rng.standard_normal(n)
+
+    with pytest.raises(TypeError, match="CompoundDelay|D-INV"):
+        tr.marginal_transport(toy["K"], (lambda p: y), block)
+    with pytest.raises(TypeError, match="make_kernelsolve"):
+        tr.marginal_transport(object(), y, block)
+    # multi-key index rejected (D3).
+    W = rng.standard_normal((n, 3))
+    bad = tr.TransportBlock("timing", W,
+                            {"a": slice(0, 2), "b": slice(2, 3)},
+                            block.conditioner_precision)
+    with pytest.raises(ValueError, match="exactly one coefficient key"):
+        tr.marginal_transport(toy["K"], y, bad)
+    # negative conditioner precision -> validate error (no floor, D9). A constant
+    # negative spec is rejected by array_block eagerly, so use a live callable.
+    def negcp(params):
+        return kh.jnp.asarray([1.0, -1.0, 1.0])
+    negcp.params = []
+    negblock = tr.TransportBlock("timing", W, {"k": slice(0, 3)}, negcp)
+    t = tr.marginal_transport(toy["K"], y, negblock)
+    with pytest.raises(ValueError, match="negative|no floor"):
+        t.validate(_eta(toy["eta_names"], rng))
+
+
+def test_marginal_transport_matrix_mode_raises():
+    """T-D5 (matrix mode): require_metamath -> NotImplementedError."""
+    ds.config(kernels="matrix")
+    try:
+        rng = np.random.default_rng(5)
+        W = rng.standard_normal((10, 2))
+        block, _ = _make_block(W)
+        with pytest.raises(NotImplementedError, match="metamath"):
+            tr.marginal_transport(object(), rng.standard_normal(10), block)
+    finally:
+        ds.config(kernels="matrix")
+
+
+def test_marginal_transport_live_kernel_hooks(metamath_backend):
+    """T-D6: live_kernel_quadratic and live_kernel_standard_deviation match the
+    dense v^T C^-1 v and sqrt(diag C) at two eta points; bad inputs raise."""
+    rng = np.random.default_rng(6)
+    toy = _build_toy_marginal(rng)
+    n = toy["n0"].shape[0]
+    W = rng.standard_normal((n, 3))
+    block, _ = _make_block(W)
+    t = tr.marginal_transport(toy["K"], rng.standard_normal(n), block)
+
+    for _ in range(2):
+        eta = _eta(toy["eta_names"], rng)
+        phi = toy["phi_of"](eta)
+        v = rng.standard_normal(n)
+        assert np.isclose(t.live_kernel_quadratic(eta, v),
+                          _oracle_quadratic(toy["n0"], toy["F_all"], phi, v),
+                          rtol=1e-8, atol=1e-10)
+        diag_C = toy["n0"] + (toy["F_all"] ** 2) @ phi
+        assert np.allclose(t.live_kernel_standard_deviation(eta),
+                           np.sqrt(diag_C), rtol=1e-8, atol=0.0)
+
+    eta = _eta(toy["eta_names"], rng)
+    with pytest.raises(ValueError, match="shape"):
+        t.live_kernel_quadratic(eta, np.ones(n + 1))
