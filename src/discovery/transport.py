@@ -150,6 +150,70 @@ def gp_block(gp, psr_slot=None):
                           conditioner_precision)
 
 
+def _conditioner_precision_from_spec(spec, k, name):
+    """Normalize an `array_block` precision spec into a callable
+    `params -> (k,)` carrying `.params` (§5.10 category 3).
+
+    Accepts a scalar (broadcast), a `(k,)` vector, or a callable with a
+    `.params` attribute. Constant specs are positivity-checked eagerly (no
+    floors, D9); a live callable is trusted and validated at `validate()` time.
+    """
+    if callable(spec):
+        params = list(getattr(spec, 'params', []))
+
+        def cp(params_in, _f=spec):
+            return kh.jnp.asarray(_f(params_in))
+        cp.params = params
+        return cp
+
+    arr = np.asarray(spec, dtype=np.float64)
+    if arr.ndim == 0:
+        vec = np.full((k,), float(arr))
+    elif arr.shape == (k,):
+        vec = arr
+    else:
+        raise ValueError(
+            f"array_block '{name}': conditioner_precision must be a scalar, a "
+            f"({k},) vector, or a callable with .params; got shape {arr.shape}")
+    bad = np.flatnonzero(~np.isfinite(vec) | (vec < 0.0))
+    if bad.size:
+        raise ValueError(
+            f"array_block '{name}': constant conditioner_precision has "
+            f"non-finite or negative entries at indices {bad.tolist()}; supply "
+            f"a proper prior precision (no floors, D9).")
+    jvec = kh.jnparray(vec)
+
+    def cp_const(params_in, _v=jvec):
+        return _v
+    cp_const.params = []
+    return cp_const
+
+
+def array_block(F, index, conditioner_precision, name="external"):
+    """Caller-declared external transport block (PR5b, §5.10, D25).
+
+    `F` is a plain constant basis discovery does not interpret; `index` is a
+    one-key `{name: slice(0, k)}` map naming the caller's coordinate; and
+    `conditioner_precision` is MANDATORY -- the exact prior precision in the
+    caller's sampling coordinate (a scalar, a `(k,)` vector, or a callable with
+    `.params`). Discovery provides no default and no floor (D9). Column
+    validation is identical to the GP adapters.
+    """
+    F = _validate_columns(name, _eval_basis(F))
+    k = int(F.shape[1])
+    if not isinstance(index, dict) or len(index) != 1:
+        raise ValueError(
+            f"array_block '{name}': index must be a one-key dict "
+            f"{{name: slice(0, k)}}; got {index!r}")
+    (key, sli), = index.items()
+    if not (isinstance(sli, slice) and (sli.start, sli.stop) == (0, k)):
+        raise ValueError(
+            f"array_block '{name}': index slice for '{key}' must be "
+            f"slice(0, {k}); got {sli!r}")
+    cp = _conditioner_precision_from_spec(conditioner_precision, k, name)
+    return TransportBlock(name, F, {key: slice(0, k)}, cp)
+
+
 def globalgp_curn_block(globalgp, psr_slot, npsr):
     """Per-pulsar conditioner view of a DENSE global GP (D11): elementwise
     reciprocal of the dense Phi diagonal, reshaped per pulsar -- the existing
@@ -189,12 +253,54 @@ def globalgp_curn_block(globalgp, psr_slot, npsr):
 
 class _FrozenSolve:
     """One-method reference-noise operator: solve(rhs) -> (N0^-1 rhs, logdet).
-    Built at construction; contains no free parameters by construction."""
-    def __init__(self, solve_fn, description):
+    Built at construction; contains no free parameters by construction.
+
+    ``diagonal`` is the exact diagonal of the reference covariance ``N0`` in
+    canonical TOA order, retained so the geometry certifier can standardize a
+    per-TOA residual remainder (feature §8.3). It is stored, never reconstructed
+    from live noise parameters."""
+    def __init__(self, solve_fn, description, diagonal=None):
         self._solve, self.description = solve_fn, description
+        self._diagonal = None if diagonal is None else np.asarray(
+            diagonal, dtype=np.float64)
 
     def solve(self, rhs):
         return self._solve(rhs)
+
+    def diagonal(self):
+        """Return the exact ``diag(N0)`` in canonical TOA order."""
+        if self._diagonal is None:
+            raise NotImplementedError(
+                f"reference noise '{self.description}' was built without an "
+                f"exact diagonal; diag(N0) is unavailable")
+        return self._diagonal
+
+
+def _frozen_kernel_diagonal(kernel, params0):
+    """Exact ``diag(N0)`` for a frozen metamath reference kernel.
+
+    Supports the two families used as timing references: a plain diagonal/dense
+    ``NoiseMatrix`` and the Sherman-Morrison ECORR ``NoiseMatrixSM``
+    (``diag(N) + F P F^T`` with a 0/1 exposure ``F``, so the diagonal adds
+    ``F P`` epoch-wise). Any other kernel raises ``NotImplementedError`` — the
+    type is checked before touching ``kernel.N``, so composite kernels do not
+    fall into ``_materialize``.
+    """
+    if not isinstance(kernel, (metamath.NoiseMatrix, metamath.NoiseMatrixSM)):
+        raise NotImplementedError(
+            f"exact diag(N0) is not implemented for reference kernel "
+            f"{type(kernel).__name__}; supply reference_noise built from a "
+            f"NoiseMatrix or NoiseMatrixSM")
+    Nc, Nf = metamath._materialize(kernel.N)
+    diag = np.asarray(Nc if Nf is None else Nf(params=params0), dtype=np.float64)
+    if diag.ndim == 2:
+        diag = np.diagonal(diag).astype(np.float64)
+    if isinstance(kernel, metamath.NoiseMatrixSM):
+        Pc, Pf = metamath._materialize(kernel.P)
+        P = np.asarray(Pc if Pf is None else Pf(params=params0), dtype=np.float64)
+        F = np.asarray(kernel.F, dtype=np.float64)
+        diag = diag + (F * F) @ P
+    return diag
 
 
 def reference_noise(psr):
@@ -204,7 +310,8 @@ def reference_noise(psr):
     kernel = metamath.NoiseMatrix(kh.jnparray(n0))
     f = metamatrix.func(kernel.make_solve)
     return _FrozenSolve(lambda rhs: f(rhs, params={}),
-                        f"toaerrs diagonal ({psr.name})")
+                        f"toaerrs diagonal ({psr.name})",
+                        diagonal=n0)
 
 
 def reference_noise_frozen(kernel, params0, description=None):
@@ -227,8 +334,13 @@ def reference_noise_frozen(kernel, params0, description=None):
         raise ValueError(f"reference_noise_frozen: params0 is missing "
                          f"{missing}; a frozen reference must pin every "
                          f"parameter of the kernel it freezes.")
+    try:
+        diagonal = _frozen_kernel_diagonal(kernel, params0)
+    except NotImplementedError:
+        diagonal = None
     return _FrozenSolve(lambda rhs: f(rhs, params=params0),
-                        description or f"frozen kernel at {sorted(params0)}")
+                        description or f"frozen kernel at {sorted(params0)}",
+                        diagonal=diagonal)
 
 
 # --------------------------------------------------------------------------
@@ -247,7 +359,8 @@ class Transport:
     """
 
     def __init__(self, blocks, *, reference_noise, reference_residual=None,
-                 center=True):
+                 center=True, center_extsignals=None, psr_slot=None,
+                 softclip=None):
         _kernels.require_metamath("Transport")                       # D1
 
         blocks = list(blocks)
@@ -263,6 +376,7 @@ class Transport:
         # -- index assembly: contiguous, non-overlapping, collision-checked --
         self.blocks = blocks
         offset, self.index = 0, {}
+        self._block_slice = {}       # block name -> assembled q-slice (softclip)
         for b in self.blocks:
             if b.conditioner_kind not in _KINDS:
                 raise ValueError(
@@ -280,6 +394,12 @@ class Transport:
                     raise ValueError(f"block '{b.name}': index slice must be "
                                      f"localized to slice(0, k_b); got {sli}")
                 self.index[key] = slice(offset + sli.start, offset + sli.stop)
+                if b.name in self._block_slice:
+                    raise ValueError(
+                        f"duplicate block name '{b.name}'; softclip and "
+                        f"diagnostics key blocks by name, so names must be "
+                        f"unique")
+                self._block_slice[b.name] = self.index[key]
             offset += np.asarray(b.F).shape[1]
         self.dimension = offset
 
@@ -292,6 +412,10 @@ class Transport:
                              f"values ({reference_noise.description})")
         self._G0 = kh.jnparray(W.T @ np.asarray(N0mW))
         self.reference_description = reference_noise.description
+        # Retain the frozen reference-noise operator so the geometry certifier
+        # can form N0^-1 quadratics and diag(N0) without reconstructing white/
+        # ECORR noise from a notebook dictionary (feature §8.3).
+        self._reference_noise = reference_noise
 
         self._b0 = None
         if center:
@@ -303,9 +427,68 @@ class Transport:
                                  f"expected ({self._ntoa},)")
             self._b0 = kh.jnparray(np.asarray(N0mW).T @ r0)
 
+        # -- ExtSignal-subtracted centering (PR5b, §5.10) --------------------
+        # Bake E0_e = W^T N0^-1 Fext_i once; per eval subtract E0_e @ coeffs_e[i]
+        # from b0 before the centering solve. A translation only; ldJ unchanged.
+        self._extsignals = []
+        ext_params = []
+        if center_extsignals:
+            if not center:
+                raise ValueError(
+                    "center_extsignals requires center=True (it moves the "
+                    "centering translation)")
+            N0mW_np = np.asarray(N0mW)
+            for es in center_extsignals:
+                esname = getattr(es, 'name', 'extsignal')
+                Fs = getattr(es, 'Fs', None)
+                coeffs = getattr(es, 'coeffs', None)
+                if Fs is None or coeffs is None:
+                    raise TypeError(
+                        f"center_extsignals entry '{esname}' must expose .Fs "
+                        f"and .coeffs (a discovery ExtSignal)")
+                if psr_slot is None:
+                    if len(Fs) != 1:
+                        raise ValueError(
+                            f"center_extsignals '{esname}': psr_slot is "
+                            f"required to select one of {len(Fs)} pulsar bases")
+                    slot = 0
+                else:
+                    slot = psr_slot
+                if slot < 0 or slot >= len(Fs):
+                    raise ValueError(
+                        f"center_extsignals '{esname}': psr_slot={slot} out of "
+                        f"range for {len(Fs)} pulsar bases")
+                Fext = np.asarray(Fs[slot], dtype=np.float64)
+                if Fext.shape[0] != self._ntoa:
+                    raise ValueError(
+                        f"center_extsignals '{esname}': Fs[{slot}] has "
+                        f"{Fext.shape[0]} rows; expected n_toa={self._ntoa}")
+                E0 = kh.jnparray(N0mW_np.T @ Fext)          # (k, k_ext)
+                self._extsignals.append((E0, coeffs, slot, esname))
+                ext_params += list(getattr(coeffs, 'params', []))
+
+        # -- soft-clamp on named blocks' centering slices (PR5b, §5.10) ------
+        self._softclip = []
+        if softclip:
+            if not center:
+                raise ValueError(
+                    "softclip requires center=True; it clamps the centering "
+                    "translation, which does not exist without centering")
+            for bname, zmax in dict(softclip).items():
+                if bname not in self._block_slice:
+                    raise ValueError(
+                        f"softclip names unknown block {bname!r}; blocks: "
+                        f"{sorted(self._block_slice)}")
+                if not (float(zmax) > 0.0):
+                    raise ValueError(
+                        f"softclip[{bname!r}]={zmax!r} must be positive")
+                self._softclip.append(
+                    (bname, self._block_slice[bname], float(zmax)))
+
         self.center = center
-        self.params = sorted(set(sum(
-            [list(b.conditioner_precision.params) for b in self.blocks], [])))
+        self.params = sorted(set(
+            sum([list(b.conditioner_precision.params) for b in self.blocks], [])
+            + ext_params))
 
     # -- per-evaluation map (plain JAX; composes as a reparam FuncLeaf) ------
     def _factor(self, params):
@@ -321,8 +504,43 @@ class Transport:
         q = kh.jsp.linalg.solve_triangular(cf[0], xi, trans=1, lower=cf[1])
         ldJ = -kh.jnp.sum(kh.jnp.log(kh.jnp.diag(cf[0])))
         if self._b0 is not None:
-            q = q + kh.jsp.linalg.cho_solve(cf, self._b0)
+            rhs = self._b0
+            for E0, coeffs, slot, _name in self._extsignals:
+                rhs = rhs - E0 @ kh.jnp.asarray(coeffs(params))[slot]
+            mu = kh.jsp.linalg.cho_solve(cf, rhs)
+            for _name, sli, zmax in self._softclip:
+                mu = mu.at[sli].set(zmax * kh.jnp.tanh(mu[sli] / zmax))
+            q = q + mu
         return q, ldJ
+
+    def reference_noise_quadratic(self, vector):
+        """Return ``vector^T N0^-1 vector`` under the frozen reference noise.
+
+        Used by the geometry certifier's global residual-remainder RMS (§8.3).
+        """
+        vector = kh.jnp.asarray(vector)
+        if vector.shape != (self._ntoa,):
+            raise ValueError(
+                f"reference_noise_quadratic expects shape ({self._ntoa},); "
+                f"got {tuple(vector.shape)}")
+        solved, _ = self._reference_noise.solve(vector)
+        out = vector @ solved
+        if not bool(kh.jnp.isfinite(out)):
+            raise ValueError("reference_noise_quadratic produced non-finite "
+                             "output")
+        return out
+
+    def reference_noise_standard_deviation(self):
+        """Return ``sqrt(diag(N0))`` in canonical TOA order (§8.3)."""
+        diag = np.asarray(self._reference_noise.diagonal(), dtype=np.float64)
+        if diag.shape != (self._ntoa,):
+            raise ValueError(
+                f"reference noise diagonal has shape {diag.shape}; expected "
+                f"({self._ntoa},)")
+        if not bool(np.all(diag > 0.0)) or not bool(np.all(np.isfinite(diag))):
+            raise ValueError("reference noise diagonal must be finite and "
+                             "strictly positive")
+        return diag ** 0.5
 
     def split(self, q):
         """{coefficient-key: q[slice]} view, in self.index order."""
@@ -385,6 +603,10 @@ class Transport:
             "center": self.center,
             "reference_noise": self.reference_description,
         }
+        if self._extsignals:
+            out["center_extsignals"] = [name for *_, name in self._extsignals]
+        if self._softclip:
+            out["softclip"] = {name: zmax for name, _sli, zmax in self._softclip}
         if params is None:
             if noise_solve is not None:
                 raise ValueError("diagnostics(noise_solve=...) requires params")
@@ -416,6 +638,25 @@ class Transport:
             )
         return out
 
+    def fingerprint(self):
+        """Stable structural digest of this transport (block names/dims/order,
+        parameter dependencies, centering, reference-noise description).
+
+        Digests only the structure returned by ``diagnostics()`` (no params),
+        so it is independent of any particular hyperparameter draw. Consumers
+        (e.g. the nltiming dynamic run manifest) persist this so a saved run's
+        transport can be reconciled without serializing an opaque closure.
+        """
+        import hashlib
+        import json
+
+        payload = json.dumps(
+            {"schema": "discovery-transport-v1", "structure": self.diagnostics()},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 # --------------------------------------------------------------------------
 # ArrayTransport (D24)
@@ -446,6 +687,12 @@ class ArrayTransport:
         centers = {t.center for t in transports}
         if len(centers) != 1:
             raise ValueError("ArrayTransport requires all-or-none centering")
+        if any(getattr(t, '_extsignals', None) or getattr(t, '_softclip', None)
+               for t in transports):
+            raise ValueError(
+                "ArrayTransport does not support per-pulsar ExtSignal centering "
+                "or softclip; the ragged joint path loops per-pulsar Transport "
+                "objects instead (D23/D24, §5 note 2)")
 
         self.transports = transports
         self.dimension = dims[0]
@@ -515,3 +762,16 @@ class ArrayTransport:
             "npsr": self.npsr,
             "params": list(self.params),
         }
+
+    def fingerprint(self):
+        """Stable structural digest of the array transport (see
+        :meth:`Transport.fingerprint`)."""
+        import hashlib
+        import json
+
+        payload = json.dumps(
+            {"schema": "discovery-array-transport-v1", "structure": self.diagnostics()},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
