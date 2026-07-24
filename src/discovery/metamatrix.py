@@ -13,7 +13,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
-from sympy import Matrix
 
 from . import prior
 from . import utils
