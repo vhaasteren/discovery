@@ -113,6 +113,11 @@ def run_nuts_with_checkpoints(
     after each iteration. It saves samples to feather files and the NumPyro MCMC
     state to a pickle.
 
+    Preferred construction is :func:`makesampler_nuts`, which attaches
+    ``sampler.to_df`` from the model's ``to_df``. If ``sampler.to_df`` is
+    missing but the underlying NUTS kernel's ``.model`` defines ``to_df``,
+    that attachment is recovered automatically.
+
     Parameters
     ----------
     sampler : numpyro.infer.MCMC
@@ -128,8 +133,8 @@ def run_nuts_with_checkpoints(
 
     Returns
     -------
-    None
-        This function doesn't return any value but saves the results to disk.
+    pandas.DataFrame
+        The concatenated sample table written to ``numpyro-samples.feather``.
 
     Side Effects
     ------------
@@ -142,14 +147,14 @@ def run_nuts_with_checkpoints(
     -------
     >>> import discovery.samplers.numpyro as ds_numpyro
     >>> # Assume `model` is configured
-    >>> npsampler = ds_numpyro.makesampler_nuts(model, num_samples =100, num_warmup=50)
+    >>> npsampler = ds_numpyro.makesampler_nuts(model, num_samples=100, num_warmup=50)
     >>> ds_numpyro.run_nuts_with_checkpoints(npsampler, 10, jax.random.key(42))
 
     """
+    _ensure_sampler_to_df(sampler)
+
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-
-    _ensure_sampler_to_df(sampler)
 
     samples_file = outdir / "numpyro-samples.feather"
     checkpoint_file = outdir / "numpyro-checkpoint.pickle"
@@ -196,3 +201,5 @@ def run_nuts_with_checkpoints(
         sampler.post_warmup_state = sampler.last_state
 
         rng_key, _ = jax.random.split(rng_key)
+
+    return df

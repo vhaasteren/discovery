@@ -19,8 +19,8 @@ pip install -e .
 
 _Discovery_ needs a modern Python with `numpy`, `scipy`, `jax`, and `pyarrow`. It
 runs on CPU and is happiest on an Nvidia GPU with CUDA-enabled JAX. Some
-subpackages (e.g. `discovery.samplers`) and the docs build need extra
-dependencies — install those with extras, e.g. `pip install -e ".[docs]"`.
+subpackages (e.g. `discovery.samplers`, `discovery.flow`) and the docs build need
+extra dependencies — install those with extras, e.g. `pip install -e ".[docs]"`.
 
 ## Documentation
 

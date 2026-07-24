@@ -188,7 +188,7 @@ class PulsarLikelihood(summary.SummaryMixin):
             def cond(params):
                 mu, cf = ksolve(params)
                 return mu, cf
-            cond.params = sorted(N_Nmat.params + self.N.P_var.params)
+            cond.params = sorted(set(N_Nmat.params + self.N.P_var.params))
             return cond
         P_var_inv = self.N.P_var.Phi_inv or self.N.P_var.make_inv()
 
@@ -216,7 +216,7 @@ class PulsarLikelihood(summary.SummaryMixin):
 
                 return mu, cf
 
-            cond.params = sorted(ksolve.params) + P_var_inv.params
+            cond.params = sorted(set(ksolve.params + P_var_inv.params))
 
         return cond
 
@@ -338,7 +338,7 @@ class GlobalLikelihood(summary.SummaryMixin):
                 # ys = [key, _ := sl(key, params) + jnp.dot(F, c[slc]) for sl, F, slc in zip(sls, Fs, slcs)]
                 return key, ys
 
-            sampler.params = sorted(set.union(*[set(sl.params) for sl in sls])) + Phi_sample.params
+            sampler.params = sorted(set(sum([sl.params for sl in sls], []) + Phi_sample.params))
 
         return sampler
 
@@ -407,7 +407,7 @@ class GlobalLikelihood(summary.SummaryMixin):
 
                 params_kterms = list(set.union(*[set(kterm.params) for kterm in kterms]))
                 params_kmeans = kmeans.params if kmeans is not None else []
-                loglike.params = sorted(params_kterms + params_kmeans + P_var_inv.params)
+                loglike.params = sorted(set(params_kterms + params_kmeans + P_var_inv.params))
 
         return loglike
 
@@ -574,7 +574,7 @@ class GlobalLikelihood(summary.SummaryMixin):
                     return mu, cf
                     # return mu, cf, phiinv, tnt
 
-                cond.params = sorted(set.union(*[set(ksolve.params) for ksolve in ksolves])) + P_var_inv.params
+                cond.params = sorted(set(sum([ksolve.params for ksolve in ksolves], []) + P_var_inv.params))
 
         return cond
 
@@ -799,7 +799,7 @@ class ArrayLikelihood(summary.SummaryMixin):
                     return logp
 
                 params_kmeans = kmeans.params if kmeans is not None else []
-                loglike.params = sorted(kterms.params + params_kmeans + P_var_inv.params)
+                loglike.params = sorted(set(kterms.params + params_kmeans + P_var_inv.params))
 
         return loglike
 
@@ -920,6 +920,6 @@ class ArrayLikelihood(summary.SummaryMixin):
                 else:
                     raise ValueError("Unknown logdet method: {}".format(make_logdet))
 
-            loglike.params = sorted(kterms.params + factors.params)
+            loglike.params = sorted(set(kterms.params + factors.params))
 
         return loglike

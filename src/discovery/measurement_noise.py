@@ -24,18 +24,46 @@ from . import signals
 
 
 # no backends
-def makenoise_measurement_simple(psr, noisedict={}):
+def makenoise_measurement_simple(psr, noisedict={}, add_equad=True, tnequad=False):
+    """Single-EFAC (optionally single-EQUAD) white-noise model for a pulsar.
+
+    Builds a diagonal measurement-noise matrix using one ``efac`` for the whole
+    pulsar. When ``add_equad`` is True an EQUAD term is included: ``tnequad=True``
+    uses the TempoNest convention (EQUAD added outside the EFAC scaling), while the
+    default (``tnequad=False``) uses the tempo2/``t2equad`` convention (EQUAD added
+    in quadrature with the TOA errors, inside the EFAC scaling). Set
+    ``add_equad=False`` for an EFAC-only model. If all required parameters are present
+    in ``noisedict`` a constant matrix is returned, otherwise a variable one.
+    """
     efac = f'{psr.name}_efac'
-    log10_t2equad = f'{psr.name}_log10_t2equad'
-    params = [efac, log10_t2equad]
+    if tnequad and add_equad:
+        log10_tnequad = f'{psr.name}_log10_tnequad'
+        params = [efac, log10_tnequad]
+    elif add_equad:
+        log10_t2equad = f'{psr.name}_log10_t2equad'
+        params = [efac, log10_t2equad]
+    else:
+        params = [efac]
 
     if all(par in noisedict for par in params):
-        noise = noisedict[efac]**2 * (psr.toaerrs**2 + 10.0**(2.0 * noisedict[log10_t2equad]))
+        if tnequad and add_equad:
+            noise = noisedict[efac]**2 * psr.toaerrs**2 + (10.0**(2.0 * noisedict[log10_tnequad]))
+        elif add_equad:
+            noise = noisedict[efac]**2 * (psr.toaerrs**2 + 10.0**(2.0 * noisedict[log10_t2equad]))
+        else:
+            noise = noisedict[efac]**2 * psr.toaerrs**2
         N = noise
     else:
         toaerrs = utils.jnparray(psr.toaerrs)
-        def getnoise(params):
-            return params[efac]**2 * (toaerrs**2 + 10.0**(2.0 * params[log10_t2equad]))
+
+        def getnoise(params, tnequad=tnequad, add_equad=add_equad):
+            if tnequad and add_equad:
+                return params[efac]**2 * toaerrs**2 + 10.0**(2.0 * params[log10_tnequad])
+            elif add_equad:
+                return params[efac]**2 * (toaerrs**2 + 10.0**(2.0 * params[log10_t2equad]))
+            else:
+                return params[efac]**2 * toaerrs**2
+
         getnoise.params = params
         N = getnoise
 
