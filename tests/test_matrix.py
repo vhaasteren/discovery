@@ -388,6 +388,36 @@ class TestPulsarLikelihoodWithDelay:
             f"kernelsolve TtST should agree. Max diff={np.max(np.abs(TtST_no_rn - TtST_rn))}"
 
 
+class TestWoodburyKernelNovarChoLower:
+    """JAX cho_solve requires a hashable Python bool for the SciPy `lower` flag."""
+
+    def _novar_kernel(self):
+        np.random.seed(0)
+        n_data, n_basis = 32, 4
+        y0 = np.random.randn(n_data)
+        F = np.random.randn(n_data, n_basis)
+        N = matrix.NoiseMatrix1D_novar(np.full(n_data, 0.25))
+        P = matrix.NoiseMatrix1D_novar(np.full(n_basis, 1.0))
+        return matrix.WoodburyKernel_novar(N, F, P), y0
+
+    def test_cf_lower_is_python_bool(self):
+        kernel, _ = self._novar_kernel()
+        assert type(kernel.cf[1]) is bool
+
+    def test_callable_y_kernelproduct_tolerates_ndarray_lower(self):
+        """Regression for CI: SciPy can hand back array(False) as `lower`."""
+        kernel, y0 = self._novar_kernel()
+        kernel.cf = (kernel.cf[0], np.array(False))
+
+        def y_var(params):
+            return y0
+
+        y_var.params = []
+        kp = kernel.make_kernelproduct(y_var)
+        val = float(kp({}))
+        assert np.isfinite(val)
+
+
 class TestMakeUind:
     def test_variable_epoch_sizes_pad_with_zero(self):
         U = np.array(
