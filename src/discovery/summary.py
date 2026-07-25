@@ -51,7 +51,7 @@ class SignalInfo:
     slices: dict | None = None             # label -> slice, for stacked bases
     # How this block appears to the COEFFICIENT frontend (`clogL`); the marginal
     # frontend (`logL`) integrates every GP block analytically. Derived from the
-    # assembled kernel's `.index` -- never from GP type (D3/D17). See
+    # assembled kernel's `.index` -- never from GP type. See
     # `_coefficients_label`.
     coefficients: str = '—'
 
@@ -117,16 +117,16 @@ def _prior_params(gp):
 
 
 def _coefficients_label(gp, keys, assembled):
-    """The `coefficients` column for one GP row (D17).
+    """The `coefficients` column for one GP row.
 
     *keys* are the GP's own coefficient-index keys; *assembled* is the set of
     coefficient keys the applicable frontend actually samples, read off the
     assembled kernel's `.index`. Ground truth is that index, not the GP's type:
     `logL` marginalizes every GP, and a variable GP shadowed by
-    `concat=False` is marginalized too (§3).
+    `concat=False` is marginalized too.
     """
     if getattr(gp, 'project', False):
-        # ADR 0004: projected out of the kernel entirely, never a coefficient.
+        # Projected out of the kernel entirely, never a coefficient.
         return 'projected'
 
     keys = list(keys or [])
@@ -318,7 +318,7 @@ def _outer_coefficient_keys(model):
     on the metamath route, a list-of-dicts (one per pulsar) or a flat dict. The
     legacy matrix ArrayLikelihood has no such property; it merges the same
     per-GP `.index` dicts inside `clogL`, so fall back to that same merge. Both
-    read an index, never a GP type (D3).
+    read an index, never a GP type.
     """
     assembly = getattr(model, '_coefficient_assembly', None)
     if assembly is not None:
@@ -348,7 +348,7 @@ def _collect(model):
     globalgp = getattr(model, 'globalgp', None)
     psls = getattr(model, 'psls', None)
 
-    # Route the assembled coefficient-key set to each row (§7.1). Treatment is a
+    # Route the assembled coefficient-key set to each row. Treatment is a
     # property of the FRONTEND, not of a GP: `logL` marginalizes everything,
     # `clogL` samples exactly what the assembled `.index` exposes.
     if psls is None:

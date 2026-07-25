@@ -104,7 +104,7 @@ class PulsarLikelihood(summary.SummaryMixin):
         noise, y = noise[0], y[0]
 
         if cgps:
-            # Timing-model projection (float32-safe, ADR 0004): any GP marked
+            # Timing-model projection (float32-safe): any GP marked
             # `project=True` (via makegp_timing(..., project=True)) is projected
             # OUT rather than given a 1e40 prior; the remaining cgps stay ordinary
             # Woodbury blocks. Off by default → byte-identical to the branch below.
@@ -141,7 +141,7 @@ class PulsarLikelihood(summary.SummaryMixin):
             # The chained (concat=False) construction below overwrites `.index`
             # per iteration, so only the LAST variable GP keeps sampled
             # coefficients; the rest are silently marginalized. Make that
-            # explicit rather than accidental (D2).
+            # explicit rather than accidental.
             if len(vgps) > 1 and not concat and marginalize_all_but_last is not True:
                 shadowed = [getattr(g, 'gpname', '<unnamed>') for g in vgps[:-1]]
                 last = getattr(vgps[-1], 'gpname', '<unnamed>')
@@ -228,7 +228,7 @@ class PulsarLikelihood(summary.SummaryMixin):
         else:
             # ffunc is a no-op for callables, so this is safe for any return
             # type and makes the property's contract uniform: always a
-            # `(params) -> value` callable carrying `.params` (D19).
+            # `(params) -> value` callable carrying `.params`.
             return ffunc(self.N.make_kernelproduct_gpcomponent(self.y))
 
     @functools.cached_property
@@ -582,7 +582,7 @@ class ArrayLikelihood(summary.SummaryMixin):
             raise ValueError(
                 "ArrayLikelihood: decenter/transport requires a commongp "
                 "coefficient assembly")
-        # Which algebra `clogL` uses (D4). "cross" is the historical
+        # Which algebra `clogL` uses. "cross" is the historical
         # vectorgpcomponent (forms F^T N^-1 F per pulsar); "residual" is the
         # FtNmF-free twin. "auto" picks residual iff any per-pulsar noise solve
         # has free parameters -- the configuration in which the cross form
@@ -593,7 +593,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         self.globalgp = globalgp
         self.transform = transform
         self.decenter = decenter
-        # reference+delta (single-precision Half B, ADR 0001/0003): an optional
+        # reference+delta (single-precision Half B): an optional
         # single central params dict theta_ref. When given, each GP level's prior
         # covariance Phi is frozen ONCE at theta_ref in float64 (the "thin top
         # layer", `_freeze_reference`) and the marginal logL is evaluated as
@@ -607,7 +607,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         # deterministic Fourier signals, use makecommongp_fourier(..., means=...)
         # instead.
         self.extsignals = extsignals
-        # A prebuilt transport (§5.9). `decenter=True` is sugar that builds one
+        # A prebuilt transport. `decenter=True` is sugar that builds one
         # from the commongp/globalgp blocks; passing `transport=` supplies your
         # own (e.g. with a pinned-noisedict reference for varying white noise).
         self.transport = transport
@@ -660,7 +660,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         it as a frozen constant leaf (a metamath.NoiseMatrix). Its .make_inv
         folds to a float64 (Phi_ref^-1, logdet Phi_ref) constant -- the reference
         baseline the refdelta graphs expand around. The covariance (not the
-        inverse) is frozen (ADR 0001), so a non-sampled sub-component
+        inverse) is frozen, so a non-sampled sub-component
         self-cancels (Delta = 0). theta_ref is consumed entirely here; only the
         frozen leaf reaches the kernels/graphs (hard guardrail).
         """
@@ -670,13 +670,13 @@ class ArrayLikelihood(summary.SummaryMixin):
         arr = getN(self.reference) if callable(getN) else getN
         return metamath.NoiseMatrix(kh.jnp.asarray(arr))
 
-    # ---- kernel assembly (D18) --------------------------------------------
+    # ---- kernel assembly ---------------------------------------------------
     # Two cached helpers replace the assembly code that used to be repeated,
     # with variations, inside `conditional` / `clogL` / `logL` / `cglogL`. The
     # public cached properties consume these and no longer write `self.vsm` /
     # `self.ys`: cached properties that mutate shared attributes differently
     # depending on which one is touched first are exactly the class of bug the
-    # graph migration exists to end. Call-order invariance is tested (§10.1).
+    # graph migration exists to end. Call-order invariance is tested.
     #
     # Both require `self.commongp`; the no-commongp paths return early, before
     # either is touched.
@@ -709,7 +709,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         globalgp is folded into the CompoundGP so its coefficients are sampled
         alongside the commongp's, and the mixed-Phi prior rides along.
 
-        `reference=` is deliberately NOT consulted (§4.5): the reference+delta
+        `reference=` is deliberately NOT consulted: the reference+delta
         machinery affects only the marginal paths, matching the current
         behavior in which `clogL` never consulted it.
         """
@@ -732,7 +732,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         return vsm, ys
 
     def _build_decenter_transport(self, ys):
-        """`decenter=True` sugar (§5.9): build an ArrayTransport from the
+        """`decenter=True` sugar: build an ArrayTransport from the
         commongp (+ globalgp CURN view) blocks, per-pulsar frozen-noise
         reference, centered on the residuals `ys`.
 
@@ -761,7 +761,7 @@ class ArrayLikelihood(summary.SummaryMixin):
 
     @functools.cached_property
     def clogl_form_resolved(self):
-        """Which `clogL` algebra this instance actually uses (D4).
+        """Which `clogL` algebra this instance actually uses.
 
         Pure introspection via `metamatrix.graph_params` -- nothing is folded or
         evaluated. Exposed as a cached property rather than written as a side
@@ -821,7 +821,7 @@ class ArrayLikelihood(summary.SummaryMixin):
 
         # reparam stage: bijections on the GP coefficients; Jacobians compose.
         # A transport (prebuilt or the decenter=True sugar) is composed BEFORE
-        # any user transform (§5.9).
+        # any user transform.
         reparams = []
         if self.transport is not None:                # already validated eagerly
             reparams.append(self.transport.as_reparam())

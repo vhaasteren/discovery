@@ -380,7 +380,7 @@ vsmup_ind_correct = jax.vmap(smup_ind_correct, in_axes=(0, None, None, None))
 # The ECORR indicators are orthogonal (one TOA per epoch), so K decouples per
 # epoch and K^{-1/2} has the closed form with per-epoch factor alpha_k below.
 # Used by the timing-model projection (float32-safe); see
-# dev_architecture/single_precision/docs/adr/0004-timing-model-projection.md.
+# See docs/metamatrix_dev.md (timing-model projection).
 
 def smwhiten_ind(A, l, xdivA, ind):
     """Per-epoch whitening correction: the rank-1 part of (K^{-1/2} x) for one epoch."""

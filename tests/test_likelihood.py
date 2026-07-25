@@ -335,7 +335,7 @@ def _all_variable_model(psr):
     """Fixed white noise + two variable GP blocks, concat'd into ONE Woodbury
     layer whose N is the bare measurement noise. On the matrix route that
     assembles a `WoodburyKernel_varP` over a `matrix.NoiseMatrix`, which is the
-    branch `likelihood.conditional` routes to `make_kernelsolve_simple` (D16)."""
+    branch `likelihood.conditional` routes to `make_kernelsolve_simple`."""
     return ds.PulsarLikelihood([psr.residuals,
                                 ds.makenoise_measurement(psr, psr.noisedict),
                                 ds.makegp_timing(psr, svd=True, variable=True),
@@ -345,10 +345,10 @@ def _all_variable_model(psr):
 
 class TestAllVariableConditional:
     """`conditional` on an all-variable single-pulsar model used to crash on the
-    matrix route: `WoodburyKernel_varP` had no `make_kernelsolve_simple` (D16).
+    matrix route: `WoodburyKernel_varP` had no `make_kernelsolve_simple`.
 
-    Route-agnostic by design — the method is deleted with `matrix.py` at Phase 5,
-    but this test keeps running on the surviving path.
+    Route-agnostic by design — the method is deleted with `matrix.py` when the
+    legacy path is removed, but this test keeps running on the surviving path.
     """
 
     @pytest.mark.parametrize("kernels", ["matrix", "metamath"])
@@ -445,7 +445,7 @@ class TestAllVariableConditional:
 class TestConcatShadowGuard:
     """`PulsarLikelihood(concat=False)` chains variable GPs and overwrites
     `.index` each iteration, so every variable GP but the last is silently
-    marginalized. That must be confirmed, not stumbled into (D2)."""
+    marginalized. That must be confirmed, not stumbled into."""
 
     def _two_variable_gps(self, psr):
         return [psr.residuals,
@@ -492,7 +492,7 @@ class TestConcatShadowGuard:
         on the legacy matrix route (WoodburyKernel_varNP reaches for
         `make_solve_1d` on its inner WoodburyKernel_varP, which does not define
         it). That gap predates this guard and is out of scope here — the matrix
-        path is frozen for Phase 5 deletion."""
+        path is frozen pending legacy-path removal."""
         ds.config(kernels="metamath")
         try:
             model = ds.PulsarLikelihood(self._two_variable_gps(b1855), concat=False,

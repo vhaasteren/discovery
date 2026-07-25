@@ -1,4 +1,4 @@
-"""Pivot-amplitude power-law parameterization (feature §11.1, §14.7).
+"""Pivot-amplitude power-law parameterization.
 
 The pivot reparameterization samples the amplitude at a sensitivity-weighted
 pivot frequency instead of 1/yr, decorrelating amplitude and slope. It must

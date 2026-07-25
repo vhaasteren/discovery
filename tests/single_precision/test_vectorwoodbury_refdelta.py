@@ -16,7 +16,7 @@ projected output (any Phi, any Phi_ref -- the decomposition is exact). The inner
 merged logdet sum_i logdet(I + Phi_in,i G_in,i) is cross-checked against numpy.
 
 See research_note_nested_increment.md (sec. 2-4) and
-dev_architecture/single_precision/piece2_fused_refdelta_plan.md (rung 1).
+fused reference+delta (rung 1); see docs/metamatrix_dev.md.
 """
 import jax
 jax.config.update("jax_enable_x64", True)

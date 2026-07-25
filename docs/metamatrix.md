@@ -1,292 +1,372 @@
-# Metamatrix: graph-based kernels
+# Metamatrix: graph-based kernels (user guide)
 
-*Status of the `metamatrix-meyers` branch. Audience: Discovery developers.*
+This page is for **users** of Discovery who build and sample timing-array
+models. For internals (graph DSL, house rules, parity suite, porting guidance)
+see [Metamatrix developer guide](metamatrix_dev).
 
-Source links below point at the `metamatrix-meyers` branch on GitHub.
+## What metamatrix is
 
-## TL;DR
+A PTA likelihood evaluates quantities like
 
-`matrix.py` enumerated the Woodbury kernel `Σ = N + FPFᵀ` as a combinatorial
-family of hand-written const/var classes. **Metamatrix** replaces that with a
-small graph DSL: kernels are expressed once, symbolically, and graph *folding*
-specialises constant vs variable inputs at trace time — so the variant explosion
-collapses to one class per concept. Both paths are live behind
-`ds.config(kernels=…)`, and a suite of tests that build each model both ways and
-compare the results certifies the graph path reproduces `matrix.py` to machine
-precision — the prerequisite for eventually deprecating `matrix.py`.
+$$
+\log L(\theta) = -\tfrac12\, y^\top \Sigma(\theta)^{-1} y - \tfrac12\log\det\Sigma(\theta)
+$$
 
-This builds directly on Michele's original metamatrix design; the work here
-carried it to feature-completeness (Phases 0–4) and added the test scaffolding,
-the runtime switch, and the example/cookbook surface.
+with $\Sigma = N + F\,P\,F^\top$ (white noise $N$, design/basis $F$, GP prior
+$P$). Historically Discovery implemented every fixed/variable combination of
+$N$, $F$, and $P$ as separate classes in `matrix.py`. **Metamatrix** replaces
+that with a small **graph** representation: the same math is written once;
+constant pieces fold away at construction time and parameter-dependent pieces
+stay live.
 
-## Motivation
+You almost never touch the graph layer directly. User-facing factories
+(`makegp_*`, `makenoise_measurement`, recipes, likelihoods) build models the
+same way as before. The default backend is the graph path (**metamath**).
 
-For `Σ = N + FPFᵀ`, each of `N`, `F`, `P` is independently fixed-at-trace-time
-("constant") or parameter-dependent ("variable"). `matrix.py` enumerates the
-combinations by hand:
+## Defaults and the kernel switch
 
-- **Woodbury:** [`WoodburyKernel_novar`, `_varP`, `_varN`, `_varNP`, `_varFP`,
-  `VectorWoodburyKernel_varP`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/matrix.py)
-  — six classes.
-- **NoiseMatrix:** `NoiseMatrix1D_{novar,var}`, `NoiseMatrix2D_{novar,var}`,
-  `NoiseMatrixSM_{novar,var}`, `VectorNoiseMatrix{1D,2D}_var` plus the
-  `…12D_var` ndim-dispatchers.
+At import time Discovery selects the graph backend:
 
-Adding a feature meant touching 4–6 sibling classes. The graph rewrite expresses
-the math symbolically and lets folding handle const-vs-var, eliminating the
-combinatorial surface. See
-[`dev_architecture/metamatrix/metamatrix_architecture.md`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/dev_architecture/metamatrix/metamatrix_architecture.md)
-for the design rationale and the house rules for writing graph code.
+```python
+import discovery as ds
+assert ds.config() == "metamath"   # default
+```
 
-## Architecture / module map
+To force the legacy closure path (reference implementation, still maintained
+for comparison and rollback):
 
-| Module | Role |
+```python
+ds.config(kernels="matrix")
+# build models *after* this call
+```
+
+To switch back:
+
+```python
+ds.config(kernels="metamath")
+```
+
+Notes:
+
+- Call `ds.config(...)` **before** constructing likelihoods. Already-imported
+  class objects are not retroactively rebound.
+- This is independent of `discovery.utils.config(backend=...)` (numpy vs JAX
+  numerics).
+- Both backends remain available so you can compare results or recover known
+  matrix-path behaviour. The long-term plan is a single backend; until then
+  both are first-class.
+
+## Building models (unchanged surface)
+
+Typical single-pulsar and array construction is unchanged:
+
+```python
+import discovery as ds
+import discovery.recipes as R
+
+# Recipe zoo (same objects the tests and cookbook exercise)
+pl = R.intrinsic_rn(psr)                 # PulsarLikelihood
+al = R.intrinsic_rn_plus_global_hd(psrs) # ArrayLikelihood
+
+logL = al.logL
+print(float(logL(params)))
+```
+
+Or hand-assembled:
+
+```python
+noise = ds.makenoise_measurement(psr, noisedict)
+rn = ds.makegp_fourier(psr, ds.powerlaw, nmodes, Tspan=T)
+pl = ds.PulsarLikelihood([psr.residuals, noise, rn])
+```
+
+Factories (`signals`, `measurement_noise`, `deterministic`) are backend-agnostic:
+they go through an internal kernel factory so the same recipe builds matrix or
+metamath objects depending on `ds.config()`.
+
+See also:
+
+- [Model cookbook](tutorials/cookbook_models) — runnable gallery of tested models
+- [CW ExtSignal tutorial](tutorials/cw_extsignal_example)
+- [Single-precision tutorial](advanced/single_precision)
+- [Model summary guide](guide/model_summary)
+
+## Likelihood frontends
+
+### Marginal likelihood: `logL`
+
+Integrates GP coefficients analytically (Woodbury). Use this for standard PTA
+noise analysis (red noise, DM, HD common process, …).
+
+```python
+logL = al.logL
+value = logL(params)          # scalar
+names = logL.params           # parameter names this callable reads
+```
+
+### Coefficient likelihood: `clogL`
+
+Samples GP coefficients jointly with hyperparameters. Needed for decentered
+parameterizations, continuous-wave ExtSignals, and any analysis that keeps
+coefficients as free parameters.
+
+```python
+clogL = al.clogL
+value = clogL({**hyperparams, **coeff_params})
+```
+
+#### Choosing the algebra: `clogl_form`
+
+`ArrayLikelihood` accepts:
+
+```python
+al = ds.ArrayLikelihood(
+    psls,
+    commongp=commongp,
+    clogl_form="auto",   # default
+)
+```
+
+| Value | Behaviour |
 |---|---|
-| [`metamatrix.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/metamatrix.py) | The graph DSL: leaves, nodes, `@graph`, folding/pruning, and `func()` which materialises a graph into a callable. `func()` is called **once**, at the likelihood boundary. |
-| [`metamath.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/metamath.py) | The kernel/GP layer built on the DSL: `NoiseMatrix{,1D,2D,SM}`, `WoodburyKernel`, `GlobalWoodburyKernel`, `VectorWoodburyKernel`, `CompoundGP`, `CompoundDelay`. Methods return graphs; they never call `func()` or materialise internally. |
-| [`utils.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/utils.py) | Path-neutral substrate: numerical backend config (`config(backend=…)`, the `jnp`/`jsp`/precision/factorisation globals, `cgsolve`, `make_logdet_estimator`) **and** the GP/Kernel marker types (`Kernel`, `GP`, `ConstantGP`, `VariableGP`, `GlobalVariableGP`, `ExtSignal`) + the indexed Sherman–Morrison helpers. Imported by both paths. |
-| [`_kernels.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/_kernels.py) | The kernel-constructor **factory**. `signals.py` builds kernels by name through it; `set_mode()` (driven by `ds.config`) selects matrix vs metamath classes. |
-| [`_kernel_switch.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/_kernel_switch.py) | Used only by the tests: temporarily replaces the `matrix.*` kernel names with their metamath equivalents, so the *legacy* likelihood code can be run on the *new* kernels without editing it. It reads its name→class map from `_kernels`, so the two can never disagree. |
-| [`signals.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/signals.py) / [`measurement_noise.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/measurement_noise.py) | Model builders (`makegp_*`, `makecommongp_*`, `makeglobalgp_*`, `makedelay`, …). Build kernels through the factory + markers, so they are backend-agnostic. |
-| [`likelihood.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/likelihood.py) | The original closure-based likelihoods built on `matrix.py`. Kept as the reference implementation we compare the new path against; removed once `matrix.py` is deprecated. |
-| [`likelihood_metamath.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/likelihood_metamath.py) | Metamath-native likelihoods (`PulsarLikelihood`, `GlobalLikelihood`, `ArrayLikelihood`), composing metamath kernels directly. Replaces `likelihood.py` once `matrix.py` is deprecated. |
-| [`recipes/`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/recipes/__init__.py) | Importable "model zoo" — the exact models the comparison tests exercise and the [cookbook](tutorials/cookbook_models) renders. |
+| `"cross"` | Historical form: forms $F^\top N^{-1} F$ per pulsar, then quadratic in coefficients. |
+| `"residual"` | Forms the full residual $r = y - Fc - \sum_e F_{\mathrm{ext},e}c_e$ and applies one $N^{-1}$ solve to $r$. |
+| `"auto"` | Uses `"residual"` if any per-pulsar noise solve has free parameters; otherwise `"cross"`. |
 
-## Kernel routes and the `config` switch
+Inspect the resolved choice:
 
-`ds.config(kernels='matrix'|'metamath')` selects the kernel subsystem (distinct
-from `utils.config(backend='numpy'|'jax')`, which selects the numerical backend).
-It does two things: sets the `_kernels` factory mode, and rebinds the top-level
-`PulsarLikelihood`/`GlobalLikelihood`/`ArrayLikelihood` to the matrix or metamath
-implementation. Call it **before** building a model.
+```python
+al.clogl_form_resolved   # "cross" or "residual"
+```
 
-**The default is now `'metamath'`** (`__init__.py` sets `_KERNELS = "metamath"`
-and calls `config(kernels="metamath")` once at import so the factory mode and the
-likelihood-class bindings agree in lock-step). The certified graph path is what
-every user gets by default; `config(kernels='matrix')` remains selectable until
-the Phase 5 deletion, as the escape hatch that backs the flip's safety case.
-Rollback is the one-line default plus the import-time `config` call; no data or
-artifact format depends on the default.
+**When it matters.** With fixed white noise, both forms agree (products fold at
+construction). With free EFAC/EQUAD/ECORR, the residual form avoids pushing
+$(n_{\mathrm{toa}}\times k)$ matrices through a noise solve every evaluation and
+is usually much faster for large $k$.
 
-`signals.py` never names a kernel implementation — it calls
-`kernels.NoiseMatrix1D_var(…)` etc., and the factory resolves the name per mode
-(metamath classes from a canonical map, else fall through to `matrix.*`). This
-replaced the persistent `matrix.*` monkeypatch that the production metamath path
-formerly relied on.
+**Known issue with ≥2 ExtSignals.** The cross form currently omits
+*inter*-ExtSignal cross-terms when two or more non-orthogonal ExtSignals are
+present; the residual form is correct. Because `"auto"` may pick different
+forms depending on whether white noise is free, multi-ExtSignal models should
+prefer:
 
-The comparison tests build **every model three ways** and check the results
-match:
+```python
+clogl_form="residual"
+```
 
-| How the model is built | What it isolates |
+Tracked upstream: [nanograv/discovery#137](https://github.com/nanograv/discovery/issues/137).
+
+### Conditional distributions
+
+```python
+mean, cov_factor = pl.conditional(params)   # GP coefficient conditional
+# sample_conditional when available on the route
+```
+
+Variable-GP timing reconstruction (`makegp_timing(..., variable=True)`) works
+on both backends.
+
+## Sampled vs marginalized GPs
+
+With several variable GPs on one pulsar:
+
+```python
+# Concatenate bases (one joint coefficient block) — usually what you want
+pl = ds.PulsarLikelihood([y, noise, gp1, gp2], concat=True)
+
+# Chain Woodburys; only the *last* variable GP keeps free coefficients unless
+# you opt into the old accidental behaviour:
+pl = ds.PulsarLikelihood(
+    [y, noise, gp1, gp2],
+    concat=False,
+    marginalize_all_but_last=True,  # required when ≥2 variable GPs
+)
+```
+
+Without `marginalize_all_but_last=True`, construction raises: earlier variable
+GPs would be silently marginalized by index overwrite. That is intentional —
+sampled-vs-marginalized treatment is explicit.
+
+`model.summary()` reports a **`coefficients`** column describing how each block
+appears to the *coefficient* frontend (`sampled (k)`, `marginalized`,
+`projected`, …), derived from the assembled kernel’s index — not from GP type
+alone. See [Model summary](guide/model_summary).
+
+## Decentering and transport
+
+Decentering reparameterizes GP coefficients so the sampler walks a better-conditioned
+space. On the graph backend this is a free-standing object, not an opaque closure.
+
+### Simple sugar
+
+```python
+al = ds.ArrayLikelihood(
+    psls,
+    commongp=commongp,
+    globalgp=globalgp,   # optional; uses CURN-style conditioner view
+    decenter=True,
+)
+```
+
+Requirements for `decenter=True`:
+
+- A `commongp` must be present.
+- White noise must be **fixed** at construction (frozen reference noise). If EFAC
+  etc. are free, construction raises with a clear message — build an explicit
+  `Transport` instead (below).
+- Mutually exclusive with `transport=...`.
+
+### Explicit transport
+
+```python
+from discovery import transport as tr
+
+blocks = [
+    tr.gp_block(rn_gp, psr_slot=i)
+    for i, rn_gp in enumerate(commongp)  # pattern depends on your model
+]
+# or external bases:
+# blocks.append(tr.array_block(F, {"timing": slice(0, k)}, precision, name="timing"))
+
+t = tr.Transport(
+    blocks,
+    noise_solve=tr.reference_noise_frozen(kernel, params0),
+    y=residuals,
+    center=True,
+)
+# optional: ExtSignal-subtracted centering, softclip={name: zmax}
+al = ds.ArrayLikelihood(psls, commongp=commongp, transport=t)
+```
+
+Helpers:
+
+| API | Role |
 |---|---|
-| original likelihood + `matrix.py` kernels | the reference result |
-| original likelihood + metamath kernels (swapped in via the test-only monkeypatch) | that the new *kernels* alone reproduce the reference, independent of the likelihood rewrite |
-| new metamath likelihood + metamath kernels | that the end-state path reproduces the reference |
+| `tr.gp_block(gp, psr_slot)` | Diagonal GP prior → exact conditioner precision |
+| `tr.globalgp_curn_block(globalgp, psr_slot, npsr)` | Dense global prior → per-pulsar inverse-marginal-variance conditioner |
+| `tr.array_block(F, index, conditioner_precision, name=...)` | Caller-owned basis (e.g. timing); precision is mandatory |
+| `tr.reference_noise(psr)` / `tr.reference_noise_frozen(kernel, params0)` | Freeze $N_0$ for the transport bake |
+| `Transport` / `ArrayTransport` | Map $\xi\mapsto q$ with log Jacobian |
+| `MarginalTransport` / `marginal_transport(...)` | Live-kernel decentering of one external block against marginalized $C(\eta)$ |
+| `t.fingerprint()` | Stable structural digest (for run manifests) |
+| `t.reference_noise_quadratic(v)` / `t.reference_noise_standard_deviation()` | Frozen $N_0$ probes |
 
-The monkeypatch is now used only by these tests; the production metamath path
-uses the explicit factory instead.
+Failure semantics (user-visible):
 
-## Old → new mapping
+- Construction and `validate(params)` raise on bad shapes / non-PD conditioners.
+- Runtime `apply` under JAX is NaN-propagating (no silent floors on prior precision).
 
-Graph folding dissolves the const/var (and the 1D/2D/vector) distinctions, so the
-matrix variant families collapse to one class each.
+Recipes that wrap common decenter patterns live in `discovery.recipes`
+(`decenter_intrinsic_rn`, `decenter_intrinsic_rn_global_hd`, …).
 
-| `matrix.py` (old) | metamath (new) | Note |
-|---|---|---|
-| `WoodburyKernel_{novar,varP,varN,varNP,varFP}` | [`WoodburyKernel`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/metamath.py) | const/var by folding |
-| `VectorWoodburyKernel_varP` | `VectorWoodburyKernel` | + `make_conditional` (new; matrix had none) |
-| — (assembled ad hoc) | `GlobalWoodburyKernel` | first-class global (HD) kernel |
-| `NoiseMatrix1D_{novar,var}` | `NoiseMatrix1D` | array *or* callable |
-| `NoiseMatrix2D_{novar,var}` | `NoiseMatrix2D` | array *or* callable |
-| `NoiseMatrix12D_var` (dispatch) | `NoiseMatrix12D` | ndim dispatch retained |
-| `NoiseMatrixSM_{novar,var}` | `NoiseMatrixSM` | indexed Sherman–Morrison |
-| `VectorNoiseMatrix{1D,2D,12D}_var` | `NoiseMatrix1D/2D/12D` | "vector" distinction dissolved |
-| `CompoundGP`, `VectorCompoundGP` | `CompoundGP` | + mixed-Φ marginalised path (new) |
-| `CompoundGlobalGP` (in `matrix.py`) | `signals.CompoundGlobalGP` | relocated, backend-agnostic |
-| `CompoundDelay` | `CompoundDelay` | unchanged contract |
+## Single precision (float32) and reference+delta
 
-The factory's name→class map is the canonical encoding of this table:
-[`_kernels._METAMATH`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/_kernels.py).
+GPUs prefer `float32`, but PTA log-likelihoods subtract large numbers. Discovery
+offers opt-in mitigations that leave the default `float64` path unchanged:
 
-## Functionality: changed and added
+1. **Final combine in float64** — expensive work can run in float32; the scalar
+   assembly of quadratic and log-det pieces is promoted.
+2. **Reference + delta** — freeze GP prior covariances at a reference and evaluate
+   $\ln L = \ln L_{\mathrm{ref}} + \Delta\ln L$ so float32 only holds an $O(1)$
+   increment:
 
-- **Measurement-noise collapse.** `makenoise_measurement{,_simple}` moved to
-  [`measurement_noise.py`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/measurement_noise.py)
-  in collapsed form: the four `_novar`/`_var` terminal returns became two
-  variant-agnostic factory calls (`NoiseMatrix1D` / `NoiseMatrixSM`), the variant
-  chosen from whether the argument is an array or a callable. `signals.py`
-  re-exports them.
-- **Mixed-Φ `CompoundGP`.** A compound of a per-pulsar-diagonal (1D) GP and a
-  dense (2D, e.g. HD) GP. The coefficient-log-prior / `Phi=None` branch is now
-  gated to the vector/decentered path; a mixed but *marginalised* compound builds
-  a real combined dense Φ (block-diagonal, 1D blocks promoted to dense).
-- **`CompoundGlobalGP` relocated** out of `matrix.py` to a backend-agnostic
-  `signals.CompoundGlobalGP` (factory + markers), so a list of global GPs
-  (e.g. HD + monopole) works under both paths.
-- **ExtSignal / continuous wave.** `ExtSignal` (in `utils.py`) carries a
-  deterministic signal on its own higher-frequency Fourier basis;
-  [`makecw_extsignal`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/deterministic.py)
-  + `make_extsignal_fourier` fold it into `ArrayLikelihood` via GP cross-terms,
-  with the CW parameters never entering the GP prior.
-- **Decentering, means, conditional.** `ArrayLikelihood` supports decentered
-  (whitened-coefficient) sampling, per-GP prior `means`, and `conditional` /
-  `clogL` on the vector Woodbury path (the latter has no `matrix.py` analogue).
-- **2-D covariance bases.** `makegp_fftcov`/`avgcov`/`intcov` and
-  `makegp_fourier_variance` (dense `NoiseMatrix2D`) run through the graph path.
-- **Backend substrate.** Numerical config and the GP/Kernel markers were pulled
-  out of `matrix.py` into `utils.py`, so neither path reaches into the other.
+   ```python
+   al = ds.ArrayLikelihood(..., reference=params_ref)
+   ```
 
-## What has been checked
+3. **Timing-model projection** — `makegp_timing(..., project=True)` uses an exact
+   flat-prior projection instead of a huge-variance improper prior (float32-safe).
 
-The comparison tests (`tests/metamatrix/`) check that `logL`, `conditional`,
-`clogL`, `sample`, and `sample_conditional` agree — between the original
-`matrix.py` path and the new metamath path (both run through the original
-likelihood and through the new metamath likelihood) — to machine precision, on
-real NANOGrav pulsars. Coverage spans, at minimum:
+Details and numbers: [Single-precision tutorial](advanced/single_precision).
+Limitations worth knowing:
 
-- **Single pulsar:** white noise (simple + per-backend), ECORR as a GP and folded
-  via Sherman–Morrison, marginalised + variable timing models, power-law red
-  noise (incl. `concat=False` chained Woodburys), multiple variable GPs (RN + DM),
-  2-D `fftcov` and fixed-variance Fourier GPs, deterministic delays.
-- **Global:** independent pulsars, HD- and monopole-correlated global GPs, and a
-  compound (HD + monopole) global GP.
-- **Array:** intrinsic (vectorised) red noise, intrinsic + common-spectrum via
-  `make_combined_crn`, intrinsic + HD global, decentered variants, per-GP means,
-  and a CW ExtSignal.
+- Fused reference+delta for the HD (global) path is the best-supported case.
+- Single-level (CURN/IRN-only) refdelta routing is more limited; see the developer
+  guide if you hit missing twins.
 
-Every kernel constructor that production code or the example notebooks emit is
-exercised by at least one of these models; the audit and disposition of each is in
-[`dev_architecture/metamatrix/phase3_coverage.md`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/dev_architecture/metamatrix/phase3_coverage.md).
-These same models are the importable [`discovery.recipes`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/src/discovery/recipes/__init__.py)
-rendered in the [cookbook](tutorials/cookbook_models) — so the documented models
-and the checked models are the same objects.
+## Extra signal factories useful with the graph path
 
-A real-scale check (5 pulsars, CW + HD global + decentered common RN) agrees
-between the two kernel paths to ~1e-9 relative.
+### Unit-normal coefficient GP
 
-A parity test for `cglogL` exists (`tests/metamatrix/test_cglogl_parity.py`,
-3-pulsar fixture, `intrinsic_rn_plus_global_hd`, 3 draws, `rtol=1e-6` — loose on
-purpose, since the solve is iterative and the log-det is a stochastic estimate).
-It **skips by default**: see "cglogL is not currently runnable" below.
+```python
+gp = ds.makegp_standard_normal(psr, F)   # c ~ N(0, I), proper prior
+```
 
-### Not yet cross-checked
+Unlike `makegp_improper` (huge constant variance), this retains a real log
+determinant and does not project or renormalize columns.
 
-- **`cglogL` is not currently runnable — on either route.** It was never
-  cross-checked, and investigating that (D20) turned up why: it is broken
-  independently on both paths, and the breakage predates the graph-consistency
-  cleanup.
-  - Its CG solve and Lanczos-Hutchinson log-det estimator need the *optional*
-    `jaxopt` + `matfree` extras, which are undeclared in `pyproject.toml` and
-    absent from the devcontainer. Without them `utils` defines neither helper,
-    `matrix.py` re-exports neither, and `cglogL` raises `AttributeError`
-    immediately.
-  - With `matfree` installed, the metamath route raises
-    `AttributeError: 'VectorWoodburyKernel' object has no attribute
-    'make_kernelterms'` for the globalgp branch, and returns a raw graph (never
-    `ffunc`-wrapped) for the commongp-only branch — so metamath `cglogL` has
-    never worked.
-  - The matrix route's commongp-only branch does work; its globalgp branch dies
-    inside the CG stack on a JAX API change (`matrix_transpose` now rejects 1-D
-    input). `matfree`'s own API has also drifted (`funm.integrand_funm_sym` is
-    gone at 0.6.x; `utils` targets ~0.5.x).
+### Pivot-amplitude power law
 
-  Making `cglogL` work again is real repair work — a `make_kernelterms` on
-  `VectorWoodburyKernel`, an `ffunc` wrap, a JAX-compat fix, and a pinned
-  `matfree` extra — and is deliberately out of scope for the cleanup. The parity
-  test is committed and skips on the missing extras, so it starts enforcing
-  parity the moment the path is repaired.
-- **Performance.** The comparison-test suite checks correctness, not speed — there
-  is no general `matrix.py`-vs-metamath timing comparison. (The single-precision
-  work *does* have an HD-model benchmark: matrix vs metamath, `float64` vs `float32`;
-  see the section below.)
-- **GPU.** The comparison tests run on CPU in `float64`. The graph path is
-  JAX-native; it has now been exercised on GPU (GH200) for the single-precision HD
-  benchmark below, but broader GPU coverage of the comparison suite is still pending.
-- **Samplers.** The numpyro samplers ride on `logL`/`clogL` (which are checked),
-  but no end-to-end sampling comparison has been run.
+Sample amplitude at a sensitivity-weighted pivot frequency instead of $1/\mathrm{yr}$:
 
-## Single precision (float32) on GPU
+```python
+from discovery.signals import (
+    make_powerlaw_pivot,
+    sensitivity_weighted_pivot_frequency,
+    fourier_sensitivity_weights,
+    reference_log10_amplitude,
+)
 
-GPUs are far faster in `float32`, but a PTA marginal `logL` subtracts large numbers
-(a quadratic form $\sim 10^6$, log-determinants $\sim 10^4$) to land on an $O(1)$
-result. At the `float32` ulp of a $10^6$-scale number ($\approx 0.06$) that result is
-swamped, so a blanket-`float32` likelihood is too imprecise to sample with. Three
-complementary pieces address this. All are **opt-in** and byte-identical to the
-`float64` path when off; the user-facing comparison is in the
-[single-precision tutorial](advanced/single_precision).
+# f_pivot from frozen noise + Fourier basis, or pass log10_f_pivot explicitly
+psd = make_powerlaw_pivot(log10_f_pivot=..., components=nmodes)
+gp = ds.makegp_fourier(psr, psd, nmodes, Tspan=T)
+```
 
-- **Half A — `float64` final combine.** The expensive factorisations stay in the
-  working (`float32`) dtype, but the final scalar assembly (the big `ytNmy − quad`
-  subtraction and the log-determinant sum) is done in `float64` (`combine_f64` /
-  `pin_f64`), with the per-pulsar raw quadratics and white-noise log-dets pinned to
-  `float64` at source. This protects the *combination*, not the building of `mu`
-  (which is still born from the `float32` Cholesky).
-- **Half B — reference + delta.** Freeze each GP level's prior covariance once at a
-  reference point $\theta_{\rm ref}$ (in `float64`), and evaluate
-  $\ln L(\theta) = \ln L_{\rm ref} + \Delta\!\ln L$: $\ln L_{\rm ref}$ carries the large
-  pieces (`float64`, computed once) and `float32` only ever holds the $O(1)$
-  increment, built directly via a resolvent identity (never a current−reference
-  subtraction of two large log-likelihoods). Opt in with
-  `ArrayLikelihood(..., reference=θ_ref)`. The fused two-level HD path has
-  reference+delta twins (`vectorwoodburyjointsolve_refdelta` →
-  `globalwoodbury_fused_refdelta`).
-- **Timing-model projection.** Handle the timing model $M$ by projection (the exact
-  flat-prior limit) instead of a huge-variance prior — `float32`-safe, and it keeps
-  the corrections. Opt in with `makegp_timing(..., project=True)`.
+Public amplitude name is `log10_A_pivot`. Decode amplitude at $1/\mathrm{yr}$ with
+`reference_log10_amplitude`.
 
-Status (12 pulsars, NG15 HD model; precision vs the `float64` truth):
+## Inspecting models
 
-| flavor | max \|ΔlogL\| vs truth | note |
-|---|---|---|
-| `float64` | $\sim 10^{-8}$ | machine precision |
-| blanket `float32` | $\sim 7\times 10^{-2}$ | sampling-fatal; worsens with array size |
-| reference+delta `float32` | $\sim 10^{-3}$ (CPU) | on GPU the floor is TF32 ($\sim 10^{-2}$) |
+```python
+print(pl.summary())           # table including coefficients column
+# kernel tree / signal reprs available via summary helpers
+```
 
-On speed, the reference+delta fused HD kernel now costs **~1.5× the `float64` path's
-FLOPs** (and ~1.5× its wall-clock on a GH200), down from ~74× before the outer
-log-determinant increment was rewritten to reuse the Cholesky log-dets it already
-computes. So the accurate `float32` path is roughly as fast as the normal path while
-recovering most of the precision.
+## Recipes and tests as documentation
 
-**Done:** Half A, Half B (incl. the fused HD reference+delta twins and the
-outer-increment speedup), and projection are implemented and have a precision/speed
-harness + unit tests. **Remaining:** scaling re-measurement at 45/67 pulsars on GPU;
-optionally recovering the GPU TF32 floor with `jax_default_matmul_precision='highest'`;
-and routing reference+delta for the single-level (CURN/IRN) `vectorwoodbury` path
-(currently HD-only). Design decisions and notes live in
-[`dev_architecture/single_precision/`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/dev_architecture/single_precision/)
-(README, research notes, and ADRs 0001–0004).
+`discovery.recipes` is the importable model zoo used by:
 
-## Status and remaining work
+- the [cookbook](tutorials/cookbook_models),
+- `tests/metamatrix/` parity tests (matrix vs metamath).
 
-- **The metamath path is feature-complete.** Shared substrate extracted,
-  `signals.py` building through the factory, `likelihood_metamath` free of
-  `matrix.py`, every used constructor checked, and the last two hard cases closed
-  (the all-constant 2-D GP prior, and combining a list of global GPs). Nothing in
-  the comparison tests is left failing or skipped.
-- **What remains is the deprecation itself:** once we're confident enough to drop
-  `matrix.py`, we delete it and the original `likelihood.py`, collapse the factory
-  to metamath-only, drop the test monkeypatch, and rename `likelihood_metamath.py`
-  → `likelihood.py`. That's deliberately held until the metamath path has been
-  exercised on real analyses (this review is part of that).
-- **Known limitation — single-level refdelta routing is HD-only.** The
-  reference+delta opt-in (`ArrayLikelihood(reference=...)`) reaches the
-  single-level (CURN/IRN) case only through the current
-  `vectorwoodbury_refdelta` twin; carrying it to `vectorwoodbury` proper is
-  future work, tracked as an issue. This is by design of the existing twins and
-  is deliberately **not** addressed by the graph-consistency cleanup.
-- **Known limitation — chained variable GPs on the legacy route.**
-  `PulsarLikelihood(concat=False, marginalize_all_but_last=True)` builds on both
-  routes, but its `clogL` evaluates only under `kernels='metamath'`:
-  `matrix.WoodburyKernel_varNP` reaches for `make_solve_1d` on its inner
-  `WoodburyKernel_varP`, which does not define it. The matrix path is frozen for
-  Phase 5 deletion, so this is recorded rather than fixed.
+If a recipe builds and the parity suite passes for that topology, the graph path
+is certified for that topology.
 
-The step-by-step plan and the conditions for each step are in
-[`dev_architecture/metamatrix/exit_plan.md`](https://github.com/meyers-academic/discovery/blob/metamatrix-meyers/dev_architecture/metamatrix/exit_plan.md).
+## Known limitations (user-facing)
 
-## Pointers
+| Topic | Status |
+|---|---|
+| Dual backends | Both `matrix` and `metamath` selectable; default `metamath`. |
+| Multi-ExtSignal `clogL` cross form | Incomplete cross-terms; use `clogl_form="residual"` ([#137](https://github.com/nanograv/discovery/issues/137)). |
+| `cglogL` | Not currently runnable on either backend (missing optional deps + incomplete API). Do not rely on it. |
+| Chained multi-GP `clogL` on matrix route | Builds with `marginalize_all_but_last=True` but coefficient likelihood evaluates reliably only under `kernels='metamath'`. |
+| Ragged array transports | Not supported; all pulsars in an `ArrayTransport` must share coefficient dimension. |
+| Pickling transports | Not supported as a stable API; use `fingerprint()` for identity in run metadata. |
 
-- [Model cookbook](tutorials/cookbook_models) — runnable gallery of every tested model.
-- [API reference](api/index) — `[source]` links to each function/class.
-- `dev_architecture/metamatrix/` — design notes, exit plan, coverage audit.
+## Quick reference
+
+```python
+import discovery as ds
+
+ds.config()                          # 'metamath'
+ds.config(kernels='matrix')          # legacy path
+ds.config(kernels='metamath')        # graph path (default)
+
+al = ds.ArrayLikelihood(
+    psls,
+    commongp=commongp,
+    globalgp=globalgp,
+    decenter=False,
+    transport=None,
+    clogl_form="auto",
+    reference=None,                  # optional float32 ref+delta
+    extsignals=None,
+)
+
+al.logL / al.clogL / al.conditional
+al.clogl_form_resolved
+pl.summary()
+```
+
+For architecture, parity design, graph house rules, and how to extend metamath,
+continue with [Metamatrix developer guide](metamatrix_dev).

@@ -8,8 +8,8 @@ from pathlib import Path
 def _matrix_mode():
     """This file exercises `matrix.py` internals directly -- concrete kernel
     classes (`matrix.NoiseMatrix1D_novar`, ...) and matrix-only methods
-    (`solve_1d`). Those are valid until the Phase 5 deletion, but the factory
-    only returns them under matrix mode. After the PR6 default flip the default
+    (`solve_1d`). Those are valid until the legacy path is removed, but the factory
+    only returns them under matrix mode. After the metamath default flip the default
     is metamath, so pin this file's tests to matrix mode explicitly. The root
     conftest autouse fixture restores the module default afterward."""
     import discovery as ds

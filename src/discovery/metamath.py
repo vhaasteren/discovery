@@ -7,8 +7,8 @@ decide what runs at trace time vs runtime. `mm.func` belongs at the outer
 boundary in `likelihood.py`, not inside methods here. `make_sample` is the
 one documented exception.
 
-See `dev_architecture/metamatrix/metamatrix_architecture.md` for the full
-conventions and porting guidance before adding new methods.
+See `docs/metamatrix_dev.md` for conventions and porting guidance
+before adding new methods.
 """
 
 import functools
@@ -101,7 +101,7 @@ def woodbury(g, y, Nsolve, F, Pinv):
 def woodbury_proj(g, y, Nwhiten, M, F, Pinv):
     """Marginal logL with the timing model M handled by *projection* instead of
     a huge-variance prior (the float32-safe path; see
-    dev_architecture/single_precision/docs/adr/0004-timing-model-projection.md).
+    docs/metamatrix_dev.md, timing-model projection).
 
     Same marginal likelihood as ``woodbury`` built from the combined basis
     ``[M | F]`` with a flat (sigma^2 -> infinity) prior on the M coefficients,
@@ -118,7 +118,7 @@ def woodbury_proj(g, y, Nwhiten, M, F, Pinv):
       Pinv    : GP prior inverse leaf -> (Phi^-1, logdet Phi) (GP block only,
                 NO timing block).
 
-    Whiten FIRST (ADR 0004, decision 3): forming M^T K^-1 M by un-whitened sums
+    Whiten FIRST: forming M^T K^-1 M by un-whitened sums
     re-introduces large-minus-large cancellation in the low-frequency Fourier
     modes that overlap the timing polynomials -- catastrophic in float32.
     """
@@ -170,7 +170,7 @@ def woodbury_proj(g, y, Nwhiten, M, F, Pinv):
 def woodbury_refdelta(g, y, Nsolve, F, Pinv, Pinv_ref):
     """Marginal logL as a *reference + delta* expansion (Piece 2 'Half B'; the
     single-level test rung). See
-    dev_architecture/single_precision/research_note_on_split_with_reference.md
+    docs/metamatrix_dev.md (reference+delta)
     (sec. 2-3) and docs/adr/0001,0003.
 
     Instead of computing logL(theta) directly -- a catastrophic float32
@@ -349,7 +349,7 @@ def globalwoodbury_fused(g, projected, Pinv):
 def globalwoodbury_fused_refdelta(g, refconst, refincr, Pinv, Pinv_ref):
     """Reference+delta twin of ``globalwoodbury_fused`` -- the OUTER half of the
     fused two-level reference+delta (Piece 2 'Half B'; HD / CURN-with-IRN). See
-    dev_architecture/single_precision/research_note_nested_increment.md (sec. 4-5)
+    docs/metamatrix_dev.md (nested reference+delta)
     and piece2_fused_refdelta_plan.md (rung 2).
 
     Consumes TWO separate graphs from ``vectorwoodburyjointsolve_refdelta`` (the
@@ -537,7 +537,7 @@ def vectorwoodburyjointsolve(g, ys, Fs_outer, Nsolves, Fs_inner, Pinv):
 def vectorwoodburyjointsolve_refdelta(g, ys, Fs_outer, Nsolves, Fs_inner, Pinv, Pinv_ref):
     """Reference+delta twin of ``vectorwoodburyjointsolve`` -- the INNER half of the
     fused two-level reference+delta (Piece 2 'Half B'; HD / CURN-with-IRN). See
-    dev_architecture/single_precision/research_note_nested_increment.md (sec. 2-3)
+    docs/metamatrix_dev.md (nested reference+delta)
     and piece2_fused_refdelta_plan.md.
 
     Same per-pulsar inner intrinsic-red-noise (IRN) solve as
@@ -1091,7 +1091,7 @@ class NoiseMatrixSM(Kernel):
 
     @property
     def make_whiten(self):
-        # K^{-1/2} applicator for the timing-model projection (ADR 0004).
+        # K^{-1/2} applicator for the timing-model projection.
         return smwhiten(None, self.N, self.Uind, self.P)
 
     @property
@@ -1157,7 +1157,7 @@ class NoiseMatrix(Kernel):
 
     @property
     def make_whiten(self):
-        # diag(N)^{-1/2} applicator for the timing-model projection (ADR 0004).
+        # diag(N)^{-1/2} applicator for the timing-model projection.
         return dwhiten(None, self.N)
 
     @property
@@ -1247,7 +1247,7 @@ class WoodburyProjKernel(Kernel):
     """Like ``WoodburyKernel`` but the improper timing model `M` is handled by
     *projection* (the flat-prior / float32-safe path) instead of a huge-variance
     (1e40) Gaussian prior. The remaining GP `F` (e.g. ECORR) is kept as an
-    ordinary Woodbury block. See `woodbury_proj` and ADR 0004.
+    ordinary Woodbury block. See `woodbury_proj` and docs/metamatrix_dev.md.
 
     Drop-in for the per-pulsar noise in the fused array path: its `make_solve`
     returns the timing-projected inverse operator, so when the array kernel
@@ -1289,7 +1289,7 @@ class GlobalWoodburyKernel(Kernel):
             return globalwoodbury(ys, [N.make_solve for N in self.Ns], self.Fs, self.P.make_inv)
         elif hasattr(self.Ns, 'Ns'):
             # compound kernel: vectorized fused two-level path.
-            # Reference+delta (single-precision Half B) opt-in (ADR 0003): when
+            # Reference+delta (single-precision Half B) opt-in: when
             # BOTH frozen references are present -- the inner Phi_ref,in on the
             # inner kernel (self.Ns.P_ref) and the outer Phi_ref,gw on this kernel
             # (self.P_ref) -- route to the refdelta twins. Absent -> today's graph,
@@ -1330,7 +1330,7 @@ class VectorWoodburyKernel(Kernel):
                                    self.Fs, self.P.make_inv)
 
     def make_kernelproduct(self, ys):
-        # Reference+delta opt-in (ADR 0003): a frozen inner Phi_ref leaf in
+        # Reference+delta opt-in: a frozen inner Phi_ref leaf in
         # self.P_ref routes to the batched single-level refdelta twin (CURN/IRN,
         # no Hellings-Downs). Absent -> today's vectorwoodbury, byte-identical.
         P_ref = getattr(self, 'P_ref', None)

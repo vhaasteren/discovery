@@ -102,9 +102,9 @@ class PulsarLikelihood(summary.SummaryMixin):
             # The chained (concat=False) construction below overwrites `.index`
             # per iteration, so only the LAST variable GP keeps sampled
             # coefficients; the rest are silently marginalized. Make that
-            # explicit rather than accidental (D2). The matrix route has the
-            # same overwrite behavior and stays user-reachable until Phase 5,
-            # so the ambiguity is rejected on both routes.
+            # explicit rather than accidental. The matrix route has the
+            # same overwrite behavior and stays user-reachable until the
+            # legacy path is removed, so the ambiguity is rejected on both routes.
             if len(vgps) > 1 and not concat and marginalize_all_but_last is not True:
                 shadowed = [getattr(g, 'gpname', '<unnamed>') for g in vgps[:-1]]
                 last = getattr(vgps[-1], 'gpname', '<unnamed>')

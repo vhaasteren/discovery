@@ -1,6 +1,5 @@
 """Characterization (golden) tests for the PSD/prior functions slated for the
-single-precision log-space + scale/clip migration (dev_architecture/
-single_precision/piece1_implementation_plan.md, §8 step 1).
+single-precision log-space + scale/clip migration.
 
 Each production PSD is pinned against an **independent linear-space oracle** — a
 direct transcription of today's formula — over a parameter grid chosen so every

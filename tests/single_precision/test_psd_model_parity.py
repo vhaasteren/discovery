@@ -119,7 +119,7 @@ ALT_ROUTES = ("matrix", "mh_patched", "mh_native")
 # With the oracle applying the SAME clip as the factory, the log-space rewrite
 # is essentially bit-faithful: Phi agrees to ~1e-14 (a few float64 ULPs from
 # 10**(sum of log10 terms) vs the linear product), and logL is bit-identical at
-# clip-inert params. (Diagnosed in dev_architecture/single_precision: an earlier
+# clip-inert params. (An earlier
 # ~1e-8 "discrepancy" was NOT reordering -- it was the low_clip=-18 floor raising
 # the steep-RN high-frequency tail, absent from a non-clipping oracle. See C2.)
 # 1e-10 relative on logL~1e5 is ~1e-5 absolute -- orders above the ULP-level
@@ -169,7 +169,7 @@ def test_logL_parity(psr, build, factory_psd, oracle_psd):
 #   - floor (low_clip=-18): touched by the high-frequency tail of steep RN
 #     (f^-gamma underflows) -- those bins carry ~(1 ns)^2, physically
 #     negligible, but the floor is NOT inert there: it shifts logL by ~1e-3
-#     (diagnosed in dev_architecture/single_precision; this is what an earlier
+#     (this is what an earlier
 #     factory-vs-unclipped-oracle "discrepancy" actually was).
 # Both are CLIP-DESIGN decisions surfaced for Patrick, not asserted pass/fail.
 HEADROOM_PRIORS = [

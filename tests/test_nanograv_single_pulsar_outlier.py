@@ -47,7 +47,7 @@ def _matrix_mode():
     builds on `likelihood.PulsarLikelihood` directly and reaches into matrix-only
     kernel APIs (`psrl.N.F`, `psrl.N.index`, `make_kernelsolve_simple`). The
     `signals` factory must therefore produce matrix kernels, which it only does
-    under matrix mode -- no longer the default after the PR6 flip.
+    under matrix mode -- no longer the default after the metamath default flip.
 
     Module-scoped and autouse so it runs BEFORE the module-scoped fixtures that
     build the likelihood (a function-scoped fixture would run too late). Saves

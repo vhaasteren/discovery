@@ -1,7 +1,7 @@
-"""Graph-consistent transport: a free-standing reparam object (D7-D13, D24).
+"""Graph-consistent transport: a free-standing reparam object.
 
 `Transport` replaces the in-likelihood decentering closure. Like
-`likelihood_metamath.py` it is a *boundary module* (D8): it may call
+`likelihood_metamath.py` it is a *boundary module*: it may call
 `metamatrix.func` at CONSTRUCTION time to bake constants, and the object it
 returns participates in graphs only through the established FuncLeaf/reparam
 contract. Kernel methods in `metamath.py` stay graph-pure.
@@ -22,7 +22,7 @@ optional reference residual r0:
 mu is a translation (dmu/dxi = 0): it never enters ldJ. For any invertible
 A(params) the map is a bijection with tracked Jacobian, so the transformed
 density is exact regardless of how well A approximates the local posterior
-precision (§5.2). Failure semantics: §5.7 -- construction raises, `validate`
+precision. Failure semantics: construction raises, `validate`
 raises, runtime `apply` is NaN-propagating JAX.
 """
 import numpy as np
@@ -78,7 +78,7 @@ def _single_key_index(index, psr_slot, width, blockname):
     """Select THE ONE coefficient key belonging to `psr_slot` from a factory
     index and localize it to slice(0, width).
 
-    Factory index shapes (§2.2): per-pulsar GP -> one-entry dict (psr_slot must
+    Factory index shapes: per-pulsar GP -> one-entry dict (psr_slot must
     be None); commongp/globalgp -> flat dict with one entry per pulsar in
     pulsar order, slices k*i..k*(i+1); CompoundGP -> list of dicts.
     """
@@ -152,11 +152,11 @@ def gp_block(gp, psr_slot=None):
 
 def _conditioner_precision_from_spec(spec, k, name):
     """Normalize an `array_block` precision spec into a callable
-    `params -> (k,)` carrying `.params` (§5.10 category 3).
+    `params -> (k,)` carrying `.params`.
 
     Accepts a scalar (broadcast), a `(k,)` vector, or a callable with a
     `.params` attribute. Constant specs are positivity-checked eagerly (no
-    floors, D9); a live callable is trusted and validated at `validate()` time.
+    floors); a live callable is trusted and validated at `validate()` time.
     """
     if callable(spec):
         params = list(getattr(spec, 'params', []))
@@ -180,7 +180,7 @@ def _conditioner_precision_from_spec(spec, k, name):
         raise ValueError(
             f"array_block '{name}': constant conditioner_precision has "
             f"non-finite or negative entries at indices {bad.tolist()}; supply "
-            f"a proper prior precision (no floors, D9).")
+            f"a proper prior precision (no floors).")
     jvec = kh.jnparray(vec)
 
     def cp_const(params_in, _v=jvec):
@@ -190,13 +190,13 @@ def _conditioner_precision_from_spec(spec, k, name):
 
 
 def array_block(F, index, conditioner_precision, name="external"):
-    """Caller-declared external transport block (PR5b, §5.10, D25).
+    """Caller-declared external transport block.
 
     `F` is a plain constant basis discovery does not interpret; `index` is a
     one-key `{name: slice(0, k)}` map naming the caller's coordinate; and
     `conditioner_precision` is MANDATORY -- the exact prior precision in the
     caller's sampling coordinate (a scalar, a `(k,)` vector, or a callable with
-    `.params`). Discovery provides no default and no floor (D9). Column
+    `.params`). Discovery provides no default and no floor. Column
     validation is identical to the GP adapters.
     """
     F = _validate_columns(name, _eval_basis(F))
@@ -215,11 +215,11 @@ def array_block(F, index, conditioner_precision, name="external"):
 
 
 def globalgp_curn_block(globalgp, psr_slot, npsr):
-    """Per-pulsar conditioner view of a DENSE global GP (D11): elementwise
+    """Per-pulsar conditioner view of a DENSE global GP: elementwise
     reciprocal of the dense Phi diagonal, reshaped per pulsar -- the existing
     decenter convention, kept for parity.
 
-    INVERSE MARGINAL VARIANCE, NOT DENSE PRIOR PRECISION (§5.3 category 2).
+    INVERSE MARGINAL VARIANCE, NOT DENSE PRIOR PRECISION.
     The exact dense prior stays in the likelihood; this view exists only inside
     the transport, and the function name says so at every call site.
     """
@@ -248,7 +248,7 @@ def globalgp_curn_block(globalgp, psr_slot, npsr):
 
 
 # --------------------------------------------------------------------------
-# reference noise (D10)
+# reference noise
 # --------------------------------------------------------------------------
 
 class _FrozenSolve:
@@ -257,7 +257,7 @@ class _FrozenSolve:
 
     ``diagonal`` is the exact diagonal of the reference covariance ``N0`` in
     canonical TOA order, retained so the geometry certifier can standardize a
-    per-TOA residual remainder (feature §8.3). It is stored, never reconstructed
+    per-TOA residual remainder. It is stored, never reconstructed
     from live noise parameters."""
     def __init__(self, solve_fn, description, diagonal=None):
         self._solve, self.description = solve_fn, description
@@ -304,7 +304,7 @@ def _frozen_kernel_diagonal(kernel, params0):
 
 
 def _live_kernel_diagonal(kernel, params):
-    """Exact ``diag(C(params))`` for a LIVE marginalized metamath kernel (D8b).
+    """Exact ``diag(C(params))`` for a LIVE marginalized metamath kernel.
 
     The eta-dependent analogue of :func:`_frozen_kernel_diagonal`: recurse through
     the folded Woodbury stack of a marginalized ``PulsarLikelihood.N`` at the
@@ -323,19 +323,19 @@ def _live_kernel_diagonal(kernel, params):
         P = np.asarray(Pc if Pf is None else Pf(params=params), dtype=np.float64)
         F = np.asarray(kernel.F, dtype=np.float64)
         return diag + (F * F) @ P
-    # Projection / float32 path: out of scope for v1 (D22).
+    # Projection / float32 path: out of scope for v1.
     if isinstance(kernel, metamath.WoodburyProjKernel):
         raise NotImplementedError(
             "_live_kernel_diagonal: WoodburyProjKernel (projection / float32 "
-            "path, ADR 0004) is not supported in v1; the float64 marginalized "
-            "psl.N uses the 1e40 improper GP via WoodburyKernel (D22).")
+            "path) is not supported in v1; the float64 marginalized "
+            "psl.N uses the 1e40 improper GP via WoodburyKernel.")
     # C = N_inner + F P F^T. Recurse on .N only; add diag(F P F^T).
     if isinstance(kernel, metamath.WoodburyKernel):
         base = _live_kernel_diagonal(kernel.N, params)
         F = np.asarray(kernel.F, dtype=np.float64)
         # diag(P(params)) from the prior kernel's own array (NoiseMatrix family).
         # A 1e40-scale improper prior contributes 1e40*(M_f (X) M_f)@1 -- FLOAT64
-        # ONLY; it overflows float32 (D22, use the projection path there).
+        # ONLY; it overflows float32 (use the projection path there).
         prior_arr = getattr(kernel.P, "N", None)
         if prior_arr is None:
             raise TypeError(
@@ -403,7 +403,7 @@ def reference_noise_frozen(kernel, params0, description=None):
 
 
 # --------------------------------------------------------------------------
-# the Transport object (D1, D13)
+# the Transport object
 # --------------------------------------------------------------------------
 
 _KINDS = ("exact_diagonal", "curn_inverse_marginal")
@@ -414,13 +414,13 @@ class Transport:
 
     q = mu(params) + L(params)^-T xi,
     A(params) = G0 + diag(conditioner_precision(params)),  A = L L^T,
-    ldJ = -sum(log diag L).  Math and failure semantics: §5.2, §5.7.
+    ldJ = -sum(log diag L).
     """
 
     def __init__(self, blocks, *, reference_noise, reference_residual=None,
                  center=True, center_extsignals=None, psr_slot=None,
                  softclip=None):
-        _kernels.require_metamath("Transport")                       # D1
+        _kernels.require_metamath("Transport")
 
         blocks = list(blocks)
         if not blocks:
@@ -462,7 +462,7 @@ class Transport:
             offset += np.asarray(b.F).shape[1]
         self.dimension = offset
 
-        # -- bake (construction-time boundary work, D8) ----------------------
+        # -- bake (construction-time boundary work) ---------------------------
         W = np.concatenate([np.asarray(b.F) for b in self.blocks], axis=1)
         self._W = kh.jnparray(W)             # retained for diagnostics/inverse
         N0mW, _ = reference_noise.solve(self._W)
@@ -473,7 +473,7 @@ class Transport:
         self.reference_description = reference_noise.description
         # Retain the frozen reference-noise operator so the geometry certifier
         # can form N0^-1 quadratics and diag(N0) without reconstructing white/
-        # ECORR noise from a notebook dictionary (feature §8.3).
+        # ECORR noise from a notebook dictionary.
         self._reference_noise = reference_noise
 
         self._b0 = None
@@ -486,7 +486,7 @@ class Transport:
                                  f"expected ({self._ntoa},)")
             self._b0 = kh.jnparray(np.asarray(N0mW).T @ r0)
 
-        # -- ExtSignal-subtracted centering (PR5b, §5.10) --------------------
+        # -- ExtSignal-subtracted centering ----------------------------------
         # Bake E0_e = W^T N0^-1 Fext_i once; per eval subtract E0_e @ coeffs_e[i]
         # from b0 before the centering solve. A translation only; ldJ unchanged.
         self._extsignals = []
@@ -526,7 +526,7 @@ class Transport:
                 self._extsignals.append((E0, coeffs, slot, esname))
                 ext_params += list(getattr(coeffs, 'params', []))
 
-        # -- soft-clamp on named blocks' centering slices (PR5b, §5.10) ------
+        # -- soft-clamp on named blocks' centering slices --------------------
         self._softclip = []
         if softclip:
             if not center:
@@ -575,7 +575,7 @@ class Transport:
     def reference_noise_quadratic(self, vector):
         """Return ``vector^T N0^-1 vector`` under the frozen reference noise.
 
-        Used by the geometry certifier's global residual-remainder RMS (§8.3).
+        Used by the geometry certifier's global residual-remainder RMS.
         """
         vector = kh.jnp.asarray(vector)
         if vector.shape != (self._ntoa,):
@@ -590,7 +590,7 @@ class Transport:
         return out
 
     def reference_noise_standard_deviation(self):
-        """Return ``sqrt(diag(N0))`` in canonical TOA order (§8.3)."""
+        """Return ``sqrt(diag(N0))`` in canonical TOA order."""
         diag = np.asarray(self._reference_noise.diagonal(), dtype=np.float64)
         if diag.shape != (self._ntoa,):
             raise ValueError(
@@ -607,15 +607,15 @@ class Transport:
 
     def as_reparam(self):
         """The metamath reparam contract: rp(params, c) -> (c_out, ldL), with
-        TRUE .params (D13)."""
+        TRUE .params."""
         def rp(params, c):
             return self.apply(params, c)
         rp.params = list(self.params)
         return rp
 
     def validate(self, params):
-        """Eager, non-JIT positivity/PD check (§5.7). Raises ValueError with
-        per-block diagnostics; returns the §5.8 diagnostics dict on success."""
+        """Eager, non-JIT positivity/PD check. Raises ValueError with
+        per-block diagnostics; returns the diagnostics dict on success."""
         offset = 0
         for b in self.blocks:
             p = np.asarray(b.conditioner_precision(params))
@@ -629,7 +629,7 @@ class Transport:
                     f"block '{b.name}': conditioner_precision has "
                     f"non-finite or negative entries at indices "
                     f"{bad.tolist()} (block-local). No floor is applied; "
-                    f"fix the prior or remove the block (D9).")
+                    f"fix the prior or remove the block.")
             offset += kb
         cf, _ = self._factor(params)
         diag = np.asarray(kh.jnp.diag(cf[0]))
@@ -639,7 +639,7 @@ class Transport:
                 f"given params (min Cholesky diagonal "
                 f"{np.nanmin(diag):.3e}). A conditioned direction has no "
                 f"prior support or the basis is degenerate; no floor is "
-                f"applied (D9). Blocks: "
+                f"applied. Blocks: "
                 f"{[(b.name, np.asarray(b.F).shape[1]) for b in self.blocks]}")
         return self.diagnostics(params)
 
@@ -718,17 +718,17 @@ class Transport:
 
 
 # --------------------------------------------------------------------------
-# ArrayTransport (D24)
+# ArrayTransport
 # --------------------------------------------------------------------------
 
 class ArrayTransport:
     """Per-pulsar transports behind one array reparam.
 
-    Requirements (validated, D24):
+    Requirements (validated):
       - at least one transport;
       - EQUAL dimension k across pulsars (the array coefficient contract is a
         rectangular (npsr, k) array, so ragged transports cannot pass through
-        it; ragged support is a non-goal, D23);
+        it; ragged support is a non-goal);
       - all-or-none centering (mixed centering would silently shift some
         pulsars' coordinates and not others').
     """
@@ -741,7 +741,7 @@ class ArrayTransport:
         if len(dims) != 1:
             raise ValueError(
                 f"ArrayTransport requires equal per-pulsar dimension; got "
-                f"{dims}. Ragged transports are not supported (D23/D24); "
+                f"{dims}. Ragged transports are not supported; "
                 f"use equal GP component counts across pulsars.")
         centers = {t.center for t in transports}
         if len(centers) != 1:
@@ -751,7 +751,7 @@ class ArrayTransport:
             raise ValueError(
                 "ArrayTransport does not support per-pulsar ExtSignal centering "
                 "or softclip; the ragged joint path loops per-pulsar Transport "
-                "objects instead (D23/D24, §5 note 2)")
+                "objects instead")
 
         self.transports = transports
         self.dimension = dims[0]
@@ -837,7 +837,7 @@ class ArrayTransport:
 
 
 # --------------------------------------------------------------------------
-# MarginalTransport: live-kernel decentering of one external block (D1-D22)
+# MarginalTransport: live-kernel decentering of one external block
 # --------------------------------------------------------------------------
 
 
@@ -862,9 +862,9 @@ class MarginalTransport:
     """
 
     def __init__(self, kernel, y, block, *, center=True):
-        _kernels.require_metamath("MarginalTransport")                    # D5
+        _kernels.require_metamath("MarginalTransport")
 
-        make_ks = getattr(kernel, "make_kernelsolve", None)               # D2
+        make_ks = getattr(kernel, "make_kernelsolve", None)
         if make_ks is None:
             raise TypeError(
                 "marginal_transport: kernel must be a metamath kernel exposing "
@@ -877,7 +877,7 @@ class MarginalTransport:
                 "centering would break the triangular Jacobian (D-INV).")
         y = np.asarray(y, dtype=np.float64)
 
-        if len(block.index) != 1:                                        # D3
+        if len(block.index) != 1:
             raise ValueError(
                 f"MarginalTransport: block must have exactly one coefficient key "
                 f"(a single array_block); got {len(block.index)}")
@@ -900,9 +900,9 @@ class MarginalTransport:
         self._y = kh.jnparray(y)
 
         self._ks = make_ks(self._y, self._W)               # (W^T C^-1 y, W^T C^-1 W)
-        # Live solve for the D8b residual quadratic (NOT frozen at a snapshot).
+        # Live solve for the residual quadratic (NOT frozen at a snapshot).
         self._live_solve = metamatrix.func(kernel.make_solve)
-        self.params = sorted(                                            # D7
+        self.params = sorted(
             set(self._ks.params) | set(block.conditioner_precision.params))
 
     # -- per-evaluation map -------------------------------------------------
@@ -927,19 +927,19 @@ class MarginalTransport:
 
     def as_reparam(self):
         """The metamath reparam contract: rp(params, c) -> (c_out, ldL), with
-        TRUE .params (D13 parity with Transport)."""
+        TRUE .params (parity with Transport)."""
         def rp(params, c):
             return self.apply(params, c)
         rp.params = list(self.params)
         return rp
 
-    # -- D8b live-kernel geometry hooks (offline certifier only) ------------
+    # -- live-kernel geometry hooks (offline certifier only) ----------------
     def live_kernel_quadratic(self, params, vector):
         """Return ``vector^T C(params)^-1 vector`` under the LIVE marginal kernel.
 
         The eta-dependent analogue of ``Transport.reference_noise_quadratic``,
-        via the SAME kernel graph (D21) -- no dense assembly, no second
-        make_kernelsolve, no hand-rolled Woodbury (D8b).
+        via the SAME kernel graph -- no dense assembly, no second
+        make_kernelsolve, no hand-rolled Woodbury.
         """
         vector = kh.jnp.asarray(np.asarray(vector, dtype=np.float64))
         if vector.shape != (self._ntoa,):
@@ -953,7 +953,7 @@ class MarginalTransport:
         return out
 
     def live_kernel_standard_deviation(self, params):
-        """Return ``sqrt(diag(C(params)))`` in canonical TOA order (D8b).
+        """Return ``sqrt(diag(C(params)))`` in canonical TOA order.
 
         The eta-dependent analogue of
         ``Transport.reference_noise_standard_deviation``, computed by the
@@ -971,9 +971,9 @@ class MarginalTransport:
                              "positive")
         return diag ** 0.5
 
-    # -- validation / diagnostics / fingerprint (D8, D9) --------------------
+    # -- validation / diagnostics / fingerprint -----------------------------
     def validate(self, params):
-        """Eager positivity/PD check (no floors, D9). Mirrors Transport.validate."""
+        """Eager positivity/PD check (no floors). Mirrors Transport.validate."""
         b = self.blocks[0]
         p = np.asarray(b.conditioner_precision(params))
         kb = np.asarray(b.F).shape[1]
@@ -985,18 +985,18 @@ class MarginalTransport:
             raise ValueError(
                 f"block '{b.name}': conditioner_precision has non-finite or "
                 f"negative entries at indices {bad.tolist()}; no floor is "
-                f"applied (D9).")
+                f"applied.")
         cf, _b, _pinv = self._factor(params)
         diag = np.asarray(kh.jnp.diag(cf[0]))
         if not np.all(np.isfinite(diag)) or np.any(diag <= 0.0):
             raise ValueError(
                 f"marginal transport factorization is not positive definite at "
                 f"the given params (min Cholesky diagonal {np.nanmin(diag):.3e}); "
-                f"no floor is applied (D9).")
+                f"no floor is applied.")
         return self.diagnostics(params)
 
     def diagnostics(self, params=None, noise_solve=None):
-        """Structural report plus optional eager Cholesky diagnostics (D8).
+        """Structural report plus optional eager Cholesky diagnostics.
 
         ``noise_solve`` is NOT supported: the metric is live, so the honest
         geometry check is the identity / ``certify_decentered_geometry``, not a
@@ -1046,7 +1046,7 @@ class MarginalTransport:
 
 
 def marginal_transport(kernel, y, block, *, center=True):
-    """Public factory for :class:`MarginalTransport` (D1). See its docstring.
+    """Public factory for :class:`MarginalTransport`. See its docstring.
 
     ``kernel`` MUST be the assembled marginalized ``PulsarLikelihood.N`` (a
     metamath Woodbury *stack* exposing ``make_kernelsolve``) — the object whose

@@ -53,6 +53,7 @@ Discovery is a next-generation PTA data analysis package built on JAX.
    :caption: Development
 
    metamatrix
+   metamatrix_dev
 
 .. toctree::
    :maxdepth: 1

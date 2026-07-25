@@ -2,7 +2,7 @@
 
 This is what `ArrayLikelihood.clogl_form_resolved` consults to decide whether a
 per-pulsar noise solve has free parameters, *before* any likelihood graph is
-built (D5). It must never fold or evaluate anything.
+built. It must never fold or evaluate anything.
 """
 from collections import OrderedDict
 

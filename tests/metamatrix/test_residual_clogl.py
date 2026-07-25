@@ -1,4 +1,4 @@
-"""Residual-form coefficient likelihood (§4, D4/D5/D6).
+"""Residual-form coefficient likelihood.
 
 `ArrayLikelihood.clogL` has two algebraically identical forms:
 
@@ -199,7 +199,7 @@ def test_unknown_clogl_form_raises_at_construction(psrs, metamath_backend):
 
 
 def test_residual_form_requires_metamath(psrs):
-    """clogl_form='residual' is a metamath-only entry point (D1): the guard in
+    """clogl_form='residual' is a metamath-only entry point: the guard in
     the residual branch raises if the metamath path is not active when clogL is
     assembled. Build the metamath likelihood, then flip the mode away before
     touching clogL."""
@@ -413,7 +413,7 @@ def test_scaling_benchmark_is_informational_only(psr, metamath_backend, capsys):
 def test_reference_and_residual_clogl_coexist(psrs, metamath_backend):
     """`reference=` routes the marginal path; `clogl_form=` routes the
     coefficient path. Both cached properties live on one instance and neither
-    disturbs the other (§4.5)."""
+    disturbs the other."""
     theta_ref = _draws(sorted(_model(psrs, "cross").logL.params), 1)[0]
     theta_ref = {k: v for k, v in theta_ref.items() if "_coefficients(" not in k}
 

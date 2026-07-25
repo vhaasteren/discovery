@@ -1,7 +1,7 @@
 """`utils.make_uind` — the single definition consumed by both kernel routes.
 
 `matrix.py:35` imports `make_uind` from `utils`, so the metamath and matrix
-routes share one implementation and one fix (D15).
+routes share one implementation and one fix.
 """
 from pathlib import Path
 

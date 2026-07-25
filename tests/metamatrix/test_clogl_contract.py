@@ -4,7 +4,7 @@ The `make_kernelproduct_gpcomponent` fallback used to return whatever that
 method produced -- a graph for a metamath kernel -- while the primary branch
 returned an `ffunc`-wrapped callable. `ffunc` is a no-op for callables, so
 wrapping the fallback makes the property's contract uniform without changing
-the primary branch (D19).
+the primary branch.
 """
 import numpy as np
 import pytest

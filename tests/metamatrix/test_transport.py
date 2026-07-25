@@ -1,4 +1,4 @@
-"""Graph-consistent transport (§5, D7-D13, D24, D25).
+"""Graph-consistent transport.
 
 `Transport` / `ArrayTransport` replace the in-likelihood decenter closure with a
 free-standing reparam object that declares its true `.params`, carries a
@@ -37,12 +37,12 @@ def cholesky_backend(metamath_backend):
 
 
 # ==========================================================================
-# 1. Closure parity — the deletion gate (§10.5)
+# 1. Closure parity — the deletion gate
 # ==========================================================================
 
 def _legacy_decenter_transform(model):
     """Standalone replica of the deleted decenter closure
-    (likelihood_metamath.py:637-680 at the pre-deletion commit; §10.5's
+    (likelihood_metamath.py at the pre-deletion commit;
     `legacy_decenter_transform`). Returns rp(params, c) -> (q, ldL). This is
     the golden source the transport is certified against."""
     vsm, ys = model._coefficient_assembly
@@ -204,7 +204,7 @@ def test_jacobian_matches_returned_ldJ(psr, metamath_backend, center):
 
 
 # ==========================================================================
-# 3. Reparam contract — true .params (D13)
+# 3. Reparam contract — true .params
 # ==========================================================================
 
 def test_as_reparam_declares_the_true_params(psrs, metamath_backend):
@@ -457,7 +457,7 @@ def test_non_metamath_kernel_to_frozen_raises_typeerror(psr):
 def test_reference_noise_diagonal_quadratic_and_std(psr, metamath_backend):
     """The diagonal TOA-error reference exposes an exact diag(N0), and the
     transport's N0^-1 quadratic and sqrt(diag(N0)) helpers agree with it
-    (feature §8.3, geometry certifier support)."""
+    (geometry certifier support)."""
     ref = tr.reference_noise(psr)
     n0 = np.asarray(psr.toaerrs, dtype=np.float64) ** 2
     assert np.allclose(np.asarray(ref.diagonal()), n0)
@@ -509,7 +509,7 @@ def test_frozen_measurement_reference_diagonal_is_finite_positive(
 
 def test_fourier_sensitivity_weights_with_frozen_reference_noise(
         psr, metamath_backend):
-    """The pivot sensitivity weights (feature §11.1) run against a real frozen
+    """The pivot sensitivity weights run against a real frozen
     measurement-noise reference and a real Fourier basis, not a toy solver."""
     from discovery import signals as sig
 
@@ -671,7 +671,7 @@ def test_parameter_dependent_basis_is_rejected(psrs, metamath_backend):
 
 
 # ==========================================================================
-# §10.2 free-EFAC under decenter=True
+# free-EFAC under decenter=True
 # ==========================================================================
 
 def _psl_freewn(psr):
@@ -681,7 +681,7 @@ def _psl_freewn(psr):
 def test_decenter_with_free_efac_raises_naming_missing_params(psrs, metamath_backend):
     """decenter=True freezes each per-pulsar kernel at params0={}; a free EFAC
     makes that freeze incomplete, converting the old closure's silent
-    constant-N assumption into a diagnosed error (§5.9)."""
+    constant-N assumption into a diagnosed error."""
     model = ds.ArrayLikelihood([_psl_freewn(p) for p in psrs],
                                commongp=_commongp(psrs), decenter=True)
     with pytest.raises(ValueError, match=r"missing.*efac"):
@@ -715,7 +715,7 @@ def test_free_efac_via_explicit_transport_evaluates_finitely(psrs, metamath_back
 
 
 # ==========================================================================
-# §10.3 pathology matrix — legal extreme still factorizes
+# pathology matrix — legal extreme still factorizes
 # ==========================================================================
 
 def test_legal_extreme_still_factorizes(psrs, metamath_backend):
@@ -737,12 +737,12 @@ def test_legal_extreme_still_factorizes(psrs, metamath_backend):
 
 
 # ==========================================================================
-# §10.4 serialization position
+# serialization position
 # ==========================================================================
 
 def test_transport_is_not_picklable(psrs, metamath_backend):
     """Transports hold JAX arrays and closures; no pickle support is promised
-    (D23). Local closures typically raise AttributeError under stdlib pickle."""
+    Local closures typically raise AttributeError under stdlib pickle."""
     import pickle
     t = _transport_for(psrs[0], psrs, 0)
     with pytest.raises((TypeError, AttributeError, pickle.PicklingError)):
@@ -753,7 +753,7 @@ def test_transport_is_not_picklable(psrs, metamath_backend):
 def test_checkpoint_run_with_a_transport_reparam(psrs, metamath_backend, tmp_path):
     """run_nuts_with_checkpoints completes a two-checkpoint run for a model whose
     clogL contains a transport reparam: the sampler-state pickle never touches
-    model objects (§10.4)."""
+    model objects."""
     import jax
     import pandas as pd
     import numpyro
@@ -777,7 +777,7 @@ def test_checkpoint_run_with_a_transport_reparam(psrs, metamath_backend, tmp_pat
             params[key] = numpyro.sample(key, dist.Normal(0.0, 1.0).expand([width]))
         out = clogl(params)
         numpyro.factor("logl", out[0] if isinstance(out, tuple) else out)
-    # feather can't hold the vector coefficient columns; the point of §10.4 is
+    # feather can't hold the vector coefficient columns; the point is
     # that the checkpoint run completes and pickles sampler state (not model
     # objects), so a scalar-only frame is sufficient here.
     import numpy as _np
@@ -833,7 +833,7 @@ def test_array_transport_fingerprint_is_stable(psrs, metamath_backend):
 
 
 # ==========================================================================
-# PR5b extensions (§5.10, D25): array_block, ExtSignal centering, softclip
+# extensions: array_block, ExtSignal centering, softclip
 # ==========================================================================
 
 
@@ -960,7 +960,7 @@ def test_array_transport_rejects_extsignals_and_softclip(psr, metamath_backend):
 
 
 # ==========================================================================
-# MarginalTransport (feature_marginalized_dynamic_decentering §4 / §11.1)
+# MarginalTransport
 # ==========================================================================
 
 from discovery import metamath  # noqa: E402
@@ -1133,14 +1133,14 @@ def test_marginal_transport_failure_semantics(metamath_backend):
         tr.marginal_transport(toy["K"], (lambda p: y), block)
     with pytest.raises(TypeError, match="make_kernelsolve"):
         tr.marginal_transport(object(), y, block)
-    # multi-key index rejected (D3).
+    # multi-key index rejected.
     W = rng.standard_normal((n, 3))
     bad = tr.TransportBlock("timing", W,
                             {"a": slice(0, 2), "b": slice(2, 3)},
                             block.conditioner_precision)
     with pytest.raises(ValueError, match="exactly one coefficient key"):
         tr.marginal_transport(toy["K"], y, bad)
-    # negative conditioner precision -> validate error (no floor, D9). A constant
+    # negative conditioner precision -> validate error (no floor). A constant
     # negative spec is rejected by array_block eagerly, so use a live callable.
     def negcp(params):
         return kh.jnp.asarray([1.0, -1.0, 1.0])
@@ -1191,7 +1191,7 @@ def test_marginal_transport_live_kernel_hooks(metamath_backend):
 
 
 def test_live_kernel_diagonal_type_dispatch(metamath_backend):
-    """T-D6 (type dispatch): WoodburyProjKernel -> NotImplementedError (D22),
+    """Type dispatch: WoodburyProjKernel -> NotImplementedError,
     an unsupported kernel type -> TypeError."""
     from discovery.transport import _live_kernel_diagonal
 
@@ -1207,7 +1207,7 @@ def test_live_kernel_diagonal_type_dispatch(metamath_backend):
         np.asarray(gp_rn.F),           # F (GP basis, kept)
         gp_rn.Phi,                     # P
     )
-    with pytest.raises(NotImplementedError, match="WoodburyProjKernel|D22|projection"):
+    with pytest.raises(NotImplementedError, match="WoodburyProjKernel|projection"):
         _live_kernel_diagonal(proj, eta)
     with pytest.raises(TypeError, match="unsupported kernel type"):
         _live_kernel_diagonal(object(), eta)

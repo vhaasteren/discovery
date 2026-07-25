@@ -1,7 +1,7 @@
 """Reference oracle for the nested reference+delta increment (Piece 2).
 
 This is a *math* spec test: it implements the nested fused-path increment from
-`dev_architecture/single_precision/research_note_nested_increment.md` in plain
+the nested reference+delta formulas (see docs/metamatrix_dev.md) in plain
 numpy and checks it against a brute-force dense-Sigma likelihood. It locks the
 formulas the eventual metamath kernel must reproduce.
 
@@ -64,7 +64,7 @@ def _parts(C, phi_in_list, phi_gw):
 
 
 def increment(C, phi_in_ref, phi_gw_ref, phi_in, phi_gw):
-    """ΔlogL via the note's formulas (§2 inner → §3 projection → §4 outer §7)."""
+    """ΔlogL via the nested-increment formulas (inner → projection → outer)."""
     R, X = _parts(C, phi_in_ref, phi_gw_ref), _parts(C, phi_in, phi_gw)
     dat, dbt, dGt, ldin = [], [], [], 0.0
     for i in range(Np):

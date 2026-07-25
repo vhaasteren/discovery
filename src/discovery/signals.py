@@ -186,7 +186,7 @@ def makegp_improper(psr, fmat, constant=1.0e40, name='improperGP', variable=Fals
     # `project=True` marks this improper GP to be marginalized by orthogonal
     # projection (the exact flat-prior limit) rather than by feeding its huge
     # prior variance through the Woodbury solve -- the float32-safe path. See
-    # dev_architecture/single_precision/docs/adr/0004-timing-model-projection.md.
+    # See docs/metamatrix_dev.md (timing-model projection).
     # Off by default, so existing models are byte-identical.
     gp.project = project
 
@@ -1018,7 +1018,7 @@ powerlaw = make_powerlaw()
 
 
 # ---------------------------------------------------------------------------
-# Pivot-amplitude power-law parameterization (feature §11.1)
+# Pivot-amplitude power-law parameterization
 # ---------------------------------------------------------------------------
 
 import dataclasses as _dataclasses  # noqa: E402
@@ -1026,7 +1026,7 @@ import dataclasses as _dataclasses  # noqa: E402
 
 @_dataclasses.dataclass(frozen=True)
 class PowerLawParameterization:
-    r"""Amplitude/slope parameterization for a power-law GP (§11.1).
+    r"""Amplitude/slope parameterization for a power-law GP.
 
     The standard ``make_powerlaw`` samples ``log10_A`` at the fixed reference
     frequency ``f_ref = 1/yr``, where the amplitude and slope ``gamma`` are
@@ -1073,7 +1073,7 @@ class PowerLawParameterization:
 
 
 def sensitivity_weighted_pivot_frequency(freqs, weights) -> float:
-    r"""Sensitivity-weighted geometric-mean pivot frequency (§11.1).
+    r"""Sensitivity-weighted geometric-mean pivot frequency.
 
     .. math:: \log f_{\rm pivot} = \frac{\sum_j w_j \log f_j}{\sum_j w_j}
 
@@ -1091,7 +1091,7 @@ def sensitivity_weighted_pivot_frequency(freqs, weights) -> float:
 
 
 def fourier_sensitivity_weights(fmat, reference_noise) -> np.ndarray:
-    r"""Per-frequency sensitivity weights ``w_j = tr(F_j^T N0^-1 F_j)`` (§11.1).
+    r"""Per-frequency sensitivity weights ``w_j = tr(F_j^T N0^-1 F_j)``.
 
     ``fmat`` is a discovery Fourier basis ``(n_toa, 2C)`` with sine/cosine pairs
     ordered ``[sin f1, cos f1, sin f2, cos f2, ...]``; ``F_j`` is columns
@@ -1110,7 +1110,7 @@ def fourier_sensitivity_weights(fmat, reference_noise) -> np.ndarray:
 def reference_log10_amplitude(log10_A_pivot, gamma, *, f_pivot,
                               parameterization=None):
     """Convert a sampled ``log10_A_pivot`` to ``log10_A`` at the reference
-    frequency (§11.1); used to decode/display amplitudes at ``1/yr``."""
+    frequency; used to decode/display amplitudes at ``1/yr``."""
     if parameterization is None:
         parameterization = PowerLawParameterization()
     f_ref = float(parameterization.amplitude_reference_frequency)
@@ -1120,7 +1120,7 @@ def reference_log10_amplitude(log10_A_pivot, gamma, *, f_pivot,
 
 def make_powerlaw_pivot(*, f_pivot, parameterization=None, gamma=None,
                         scale=1.0, low_clip=-18.0, high_clip=-9.0):
-    r"""Pivot-amplitude power-law PSD factory (§11.1).
+    r"""Pivot-amplitude power-law PSD factory.
 
     Identical spectral form to :func:`make_powerlaw`, but the sampled amplitude
     ``log10_A_pivot`` is defined at ``f_pivot`` rather than the reference

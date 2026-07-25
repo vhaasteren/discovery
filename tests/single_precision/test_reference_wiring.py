@@ -106,7 +106,7 @@ def test_reference_independent_f64(psrs, recipe):
 
 @pytest.mark.parametrize("recipe", RECIPES)
 def test_optin_gate(psrs, recipe):
-    """Guardrail (ADR 0003): the refdelta opt-in is gated entirely by the frozen
+    """Guardrail: the refdelta opt-in is gated entirely by the frozen
     P_ref leaves. reference=None -> no P_ref on any kernel (today's graph,
     byte-identical); reference set -> a frozen P_ref appears on each live level."""
     from discovery import metamath
@@ -115,7 +115,7 @@ def test_optin_gate(psrs, recipe):
         m = recipe(psrs)
         m.logL  # build the kernels
         # the marginal kernel assembly is the ground truth; ArrayLikelihood no
-        # longer publishes it as a `self.vsm` side effect (D18).
+        # longer publishes it as a `self.vsm` side effect.
         assert getattr(m._marginal_assembly[0], "P_ref", None) is None
         if getattr(m, "gsm", None) is not None:
             assert getattr(m.gsm, "P_ref", None) is None

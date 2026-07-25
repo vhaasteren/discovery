@@ -156,7 +156,7 @@ def test_signal_object_reprs(psr, psrs, _matrix_backend):
 
 
 # --------------------------------------------------------------------------
-# the `coefficients` column (D17): treatment is a property of the FRONTEND,
+# the `coefficients` column: treatment is a property of the FRONTEND,
 # derived from the assembled kernel's .index -- never from the GP's type.
 # --------------------------------------------------------------------------
 
@@ -236,7 +236,7 @@ def test_no_outer_assembly_reports_each_pulsars_own_index(psrs, backend):
 
 
 def test_projected_timing_is_reported_projected(psr, backend):
-    """ADR 0004: a project=True GP is projected out of the kernel entirely, so
+    """A project=True GP is projected out of the kernel entirely, so
     it is neither sampled nor marginalized."""
     model = ds.PulsarLikelihood([
         psr.residuals,

@@ -28,7 +28,7 @@ def _restore_kernel_mode():
 
     Tests that switch modes (`ds.config(kernels=...)`) historically reset to
     'matrix' in teardown, which was correct only while 'matrix' was the module
-    default. After the PR6 default flip the default is 'metamath', so this
+    default. After the metamath default flip the default is 'metamath', so this
     autouse net guarantees every test starts and leaves the session at whatever
     the module default actually is -- making the whole suite mode-independent
     regardless of any per-test reset convention. Import is lazy so tests that

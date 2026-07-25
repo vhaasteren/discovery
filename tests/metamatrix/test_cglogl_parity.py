@@ -1,4 +1,4 @@
-"""matrix-vs-metamath parity for `ArrayLikelihood.cglogL` (D20).
+"""matrix-vs-metamath parity for `ArrayLikelihood.cglogL`.
 
 `cglogL` -- the conjugate-gradient log-likelihood for very large arrays (CG
 solve + stochastic-Lanczos log-det estimator) -- was the one likelihood frontend

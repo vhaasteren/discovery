@@ -1,5 +1,5 @@
 """New-behavior tests for the PSD factories (single_precision/
-piece1_implementation_plan.md, §8 step 2).
+new behaviour for the log-space PSD path).
 
 The characterization suite (test_psd_characterization.py) pins the *default*
 factory numerics against the linear oracle. This suite locks the *new* surface

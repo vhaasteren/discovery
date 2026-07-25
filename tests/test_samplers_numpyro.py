@@ -2,7 +2,7 @@
 
 The old `makesampler_nuts` iterated `kwargs.items()` and tested each `(key,
 value)` tuple for membership in an argname list, so the test was always false
-and every kwarg was silently discarded (D14). These tests pin the routing.
+and every kwarg was silently discarded. These tests pin the routing.
 """
 import pickle
 

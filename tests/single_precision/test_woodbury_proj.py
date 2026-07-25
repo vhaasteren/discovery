@@ -8,7 +8,7 @@ by whitening with K = diag(N) + ECORR and orthogonally projecting the data and
 the Fourier basis F out of the span of the (whitened) timing design M -- the
 float32-safe alternative to giving eps a huge-variance (1e40) Gaussian prior and
 running the ordinary Woodbury. See
-dev_architecture/single_precision/docs/adr/0004-timing-model-projection.md.
+docs/metamatrix_dev.md (timing-model projection).
 
 Equivalence (the f64 oracle): the flat-prior limit is exactly the proper
 1e40-prior Woodbury minus the diverging prior-normalisation constant. Under

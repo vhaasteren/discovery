@@ -1,4 +1,4 @@
-"""Call-order invariance of `ArrayLikelihood`'s cached properties (§10.1, D18).
+"""Call-order invariance of `ArrayLikelihood`'s cached properties.
 
 `logL` / `clogL` / `conditional` used to each rebuild the kernel assembly and
 write it to `self.vsm` / `self.ys` as a side effect, with variations. Whichever
@@ -152,7 +152,7 @@ def test_the_two_assemblies_are_distinct_objects_and_both_cached(psrs, metamath_
 
 
 def test_reference_is_consulted_only_by_the_marginal_assembly(psrs, metamath_backend):
-    """§4.5: reference+delta affects the marginal paths only; the coefficient
+    """reference+delta affects the marginal paths only; the coefficient
     assembly deliberately ignores it."""
     T = ds.getspan(psrs)
 

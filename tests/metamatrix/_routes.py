@@ -47,7 +47,7 @@ def build_routes(factory, force=("logL", "conditional", "clogL",
     a parity test might consume."""
     out = {}
     # Restore whatever the module default is on the way out, rather than
-    # assuming it is 'matrix'. After the PR6 default flip the module default is
+    # assuming it is 'matrix'. After the default flip the module default is
     # 'metamath', so the matrix reference route must set its mode EXPLICITLY --
     # otherwise the "matrix" reference would silently be built under metamath and
     # every parity comparison would become a self-comparison.

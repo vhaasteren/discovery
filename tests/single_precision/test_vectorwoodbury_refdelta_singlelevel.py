@@ -12,7 +12,7 @@ It is the batched twin of the scalar ``woodbury_refdelta``:
   * keeps the batched GP-block Cholesky in float32 (the speed win).
 
 See research_note_on_split_with_reference.md sec. 2-3, docs/adr/0001,0003, and
-dev_architecture/single_precision/piece2_fused_refdelta_plan.md.
+docs/metamatrix_dev.md (fused reference+delta).
 """
 import contextlib
 
@@ -105,7 +105,7 @@ class TestFloat32:
         *direct* path already inherits the Half-A f64 combine and a well-conditioned
         mu, so its error is ~1e-6 and there is little left for Half-B to remove. The
         decisive ~380x gain is a large-array / realistic-Phi phenomenon, measured in
-        dev_architecture/single_precision/harness_refdelta_table.py (and re-checked
+        the refdelta precision table (and re-checked
         in the rung-3 real-model test), not on synthetic matrices."""
         gw, gr = _graphs_varPhi(model)
         p = {"da": 0.3}

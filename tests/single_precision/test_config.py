@@ -1,4 +1,4 @@
-"""Phase A tests for the working_dtype config knob (plan §3, cases A1–A4).
+"""Tests for the working_dtype config knob.
 
 Exercises utils.config(working=...) and the derived utils.working_dtype() /
 utils.single_precision / utils.to_working() accessors.
