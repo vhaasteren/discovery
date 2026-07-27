@@ -1,7 +1,8 @@
-# Future planned development — single precision
+# Future work — single precision
 
-Ideas agreed on but deliberately deferred. Not started. Each entry: what, why,
-and a rough sketch of how, so a future session can pick it up without re-deriving.
+Deferred ideas. Not started. Each entry: what, why, and a rough how.
+Product docs: [Metamatrix user guide](../../metamatrix.md),
+[developer guide](../../metamatrix_dev.md), [tutorial](../../advanced/single_precision).
 
 ## 1. Configurable pin set
 
@@ -11,7 +12,7 @@ quantities is fixed in the kernel math. Make *which* quantities are pinned a
 config choice, without editing the kernel math.
 
 **Why.**
-- The design (`README.md`, stage 2) left an explicit open question: which of
+- The design (see the single-precision design README) left an explicit open question: which of
   `{ytNmy, lN, lP, lS, ld}` should be pins. Confirming that wants experiments on
   different datasets, not code edits.
 - Lets us run accuracy/perf sweeps: is `lP` ever load-bearing? does pinning `lS`
@@ -74,10 +75,10 @@ the **non-refdelta paths can be deleted**: one kernel per level instead of two.
 
 ## 3. Pin the outer increment-assembly to f64 (tighten the HD floor ~3 decades)
 
-**What.** `finding_fused_refdelta_table.md` shows the fused-HD refdelta f32 floor
-sits at ~1e-2, while the increment itself is only ~10 (≈6 orders below |logL|), so
-the ideal floor is ~f32-eps×10 ≈ 1e-5. The ~1000× gap is f32 roundoff in the
-*outer* increment-assembly matrix ops, whose operands span a huge dynamic range
+**What.** Prior fused-HD refdelta experiments put the f32 floor near ~1e-2,
+while the increment itself is only ~10 (≈6 orders below |logL|), so the ideal
+floor is ~f32-eps×10 ≈ 1e-5. The ~1000× gap is f32 roundoff in the *outer*
+increment-assembly matrix ops, whose operands span a huge dynamic range
 (GW-block Φ⁻¹ ~ 1e10, covariances ~1e-12).
 
 **Why.** The outer GW block is small (≤ npsr·14, ~630×630 at 45 psr), so pinning
@@ -87,8 +88,8 @@ not be pinned).
 
 **How (sketch).** In `globalwoodbury_fused_refdelta`, `combine_f64`/`pin_f64` the
 outer-only nodes: `dD_gw = −Pm·ΔΦ_gw·Pmr`, the dense outer `inv`/`ΔΦ_gw`, and the
-outer cross-term `cho_solve(cf, dbt − dK·nu_ref)`. Measure with
-`harness_fused_refdelta.py`; pairs naturally with item 1 (configurable pin set) so
-the outer-pin policy is a knob, not hardcoded.
+outer cross-term `cho_solve(cf, dbt − dK·nu_ref)`. Re-measure against the
+float64 fused path (see `tests/single_precision/`); pairs naturally with item 1
+(configurable pin set) so the outer-pin policy is a knob, not hardcoded.
 
 ## (add future items below as they come up)

@@ -1,4 +1,13 @@
-# Metamatrix Architecture
+# Metamatrix architecture
+
+Design rationale and house rules for the graph kernel path. This is a
+**durable design note**, not a living project board.
+
+For day-to-day contributor guidance see the Sphinx
+[Metamatrix developer guide](../../metamatrix_dev.md). For the remaining
+deletion work see [deletion_checklist.md](deletion_checklist.md).
+
+---
 
 ## End state
 
@@ -279,260 +288,17 @@ This is the eventual payoff: matrix.py's `WoodburyKernel_varP.make_kernelproduct
 becomes one symbolic expression in metamath, valid for every combination of
 fixed/variable N/F/P. **The 18 paths collapse to one.**
 
-## Migration plan: how matrix.py goes away
+## Migration plan (historical)
 
-The deletion is staged so the test suite stays green throughout. Roughly:
+Phases 0–4 (shared substrate, factory, likelihood_metamath, parity coverage,
+carry-overs) are **done**. The remaining work is deletion of the legacy
+`matrix.py` / `likelihood.py` oracle path.
 
-1. **Now (this branch's job).** Build metamath equivalents for every kernel
-   class and method that any of `signals.py` / `likelihood.py` /
-   `optimal.py` constructs or calls. The current monkeypatch in
-   `tests/metamatrix/_patch.py` is the *spec*: every key it patches is a
-   matrix.py symbol that must have a metamath replacement before deletion.
-2. **Parity-test everything.** Every model topology that real users build
-   (single-pulsar, GlobalLikelihood, ArrayLikelihood with/without
-   commongp/globalgp, decentering, additives, ExtSignals, CG-MDL logdet)
-   must have a row in `tests/metamatrix/` showing metamath ≈ matrix.py
-   numerically.
-3. **Rewrite `signals.py` constructors to return metamath objects directly.**
-   Drop `matrix.NoiseMatrix1D_var(getnoise)` in favor of
-   `mh.NoiseMatrix1D(getnoise)`, etc. After this step, the patch becomes
-   a no-op.
-4. **Rewrite `likelihood.py` to import only metamath.** Remove
-   `from . import matrix`. The `isinstance(x, matrix.NoiseMatrix1D_var)`
-   dimension dispatches become `isinstance(x, mh.NoiseMatrix1D)`. The
-   1D/2D marker classes (introduced in metamath specifically to support
-   this) carry the type discrimination matrix.py's hierarchy carried.
-5. **Delete `matrix.py`.** Remove the file. Remove `_patch.py` (its purpose
-   was to bridge the gap during transition).
-6. **Rename `metamath.py` → `matrix.py` (optional).** At that point
-   metamath IS the matrix subsystem; the name only mattered to distinguish
-   the two during the migration.
+See:
 
-`tests/metamatrix/` itself becomes test of the matrix subsystem proper
-once matrix.py is gone — the "metamatrix" prefix is a historical artifact
-of the transition.
+- [Deletion checklist](deletion_checklist.md) — ordered steps for the cutover
+- [Parity coverage](parity_coverage.md) — constructor → test map
+- Sphinx [Metamatrix developer guide](../../metamatrix_dev.md) — current ops docs
 
-## Current state and next steps
-
-What's already in place (`tests/metamatrix/` validates):
-
-- `mh.NoiseMatrix` (1D/2D markers), `mh.NoiseMatrixSM` (indexed
-  Sherman-Morrison ecorr) — graph leaves and `make_solve` graphs.
-- `mh.WoodburyKernel`, `mh.GlobalWoodburyKernel`, `mh.VectorWoodburyKernel`
-  with `make_kernelproduct`, `make_conditional`, `make_kernelsolve` —
-  all as graphs.
-- `mh.CompoundGP` — Phi/F composition.
-- `make_sample` — plain callable (the documented exception).
-
-What is missing and must follow this architecture:
-
-- `mh.VectorWoodburyKernel.make_kernelproduct_gpcomponent` — the
-  `ArrayLikelihood.clogL` path, including `transform` (reparams), `additives`,
-  and `extsignals`. Must be written as a graph, not a closure. This is the
-  decentering branch's centerpiece and is the immediate next deliverable.
-- A graph rewrite of `GlobalLikelihood.conditional` (currently uses
-  `psl.N.make_kernelsolve` plus a closure over `Pinv + block_diag(FtNmF)`).
-  Today it works via the `make_kernelsolve` wrapper, but it's a closure on
-  top of a graph rather than one composite graph; eventually subsume it.
-- A graph version of the CG-MDL / Lanczos logdet path (`cglogL`). This is
-  the largest open design question — Lanczos is an iterative algorithm and
-  doesn't fit a static graph; needs thought.
-
-When in doubt while adding to metamath: **write the math symbolically, let
-folding handle the rest.** If you find yourself writing `if callable(...)`
-or `_var` / `_novar` branches, you're translating matrix.py instead of
-rewriting it.
-
----
-
-# Project status and handoff (as of this checkpoint)
-
-## Goal recap
-
-Delete `matrix.py`. Replace it with graph-based equivalents in `metamath.py`
-(kernel/GP classes) and `metamatrix.py` (the graph DSL). Use `matrix.py` as
-a numerical oracle during the transition: every method the production
-likelihood layer (`PulsarLikelihood`, `GlobalLikelihood`, `ArrayLikelihood`)
-calls must produce identical results via the metamath replacement. When
-the parity suite under `tests/metamatrix/` covers every path real users
-exercise, matrix.py gets deleted and the monkeypatch infrastructure goes
-with it.
-
-## What this checkpoint contains
-
-### `tests/metamatrix/` — parity test scaffold
-
-- `conftest.py` — `psr` (B1855+09) and `psrs` (3 pulsars) session fixtures.
-- `_patch.py` — `metamatrix_patch()` context manager that swaps
-  `matrix.NoiseMatrix*`, `matrix.WoodburyKernel`, `matrix.VectorWoodburyKernel_varP`,
-  `matrix.CompoundGP`, etc. for their metamath equivalents. Models built
-  inside the context capture mh objects; outside, they capture matrix.py
-  objects. The key list IS the spec — every entry is a matrix.py symbol
-  whose metamath replacement must reach parity before matrix.py deletion.
-- `_comparison.py` — scale-aware `assert_close(kind=…)` helper (logL,
-  residuals, coeffs, matrix; each picks tolerance from the scale of the
-  reference value).
-- `test_pulsar.py` — Tier 1: single-pulsar `PulsarLikelihood`.
-  17 rows across `logL`, `conditional`, `clogL`, `sample`,
-  `sample_conditional` × 9 model topologies (measurement only, ecorr-GP,
-  ecorr-SM, timing, full RN, concat T/F, multi-vgp, variable timing).
-- `test_global.py` — Tier 2: `GlobalLikelihood` with HD / monopole ORF.
-  7 rows: `logL`, `conditional`, `sample`.
-- `test_array.py` — Tier 3: `ArrayLikelihood` with commongp / globalgp.
-  12 rows across `logL`, `conditional`, `clogL`, plus the new
-  decenter/means/extsignal rows.
-
-**Total: 35 passing, 1 xfailed.** The xfail is the only remaining gap
-documented below.
-
-### `metamath.py` — kernel/GP classes added during this work
-
-- `NoiseMatrix` — single class replaces matrix.py's `NoiseMatrix1D_novar`,
-  `NoiseMatrix1D_var`, `NoiseMatrix2D_var`, `VectorNoiseMatrix1D_var`
-  (collapsed via the graph).
-- `NoiseMatrix1D` / `NoiseMatrix2D` / `NoiseMatrix12D` — marker subclasses
-  preserving the 1D-vs-2D type discrimination that `likelihood.py:468`
-  uses for ndim dispatch. Same implementation as `NoiseMatrix`.
-- `NoiseMatrixSM` — Sherman-Morrison indexed solve for ecorr-as-noise
-  (`matrix.NoiseMatrixSM_var` replacement). Single graph node wrapping
-  `matrix.SM_1d_indexed` / `SM_2d_indexed`, dispatching on `y.ndim`.
-- `WoodburyKernel` — replaces all `WoodburyKernel_*` variants. Has
-  `make_solve`, `make_kernelproduct`, `make_conditional`,
-  `make_coefficientproduct`, `make_kernelsolve` (added during Tier 2),
-  `make_sample`.
-- `GlobalWoodburyKernel` — multi-pulsar global GP kernelproduct.
-- `VectorWoodburyKernel` — vectorized per-pulsar kernel. Has
-  `make_solve`, `make_kernelproduct`, `make_conditional`,
-  `make_kernelproduct_gpcomponent` (added during this checkpoint:
-  decenter/means/extsignals support; matches matrix.py b1bda23 signature).
-- `CompoundGP` — Phi/F composition; `.index` produces list-of-dicts in
-  vector mode and cumulative-offset flat dict in non-vector mode.
-
-### `matrix.py` — decentering features ported in
-
-- `matrix.ExtSignal` class (declarative; no math).
-- `matrix.VectorWoodburyKernel_varP.make_kernelproduct_gpcomponent`
-  rewritten to b1bda23 form: `transform` (list of reparams),
-  `extsignals` (list of ExtSignal), and `self.means` (deterministic
-  prior-center). The old single-`transform` signature is gone.
-- This is the **oracle** for parity tests; the metamath equivalent on
-  `mh.VectorWoodburyKernel` mirrors the same math.
-
-### `signals.py` / `deterministic.py` additions
-
-- `signals.make_extsignal_fourier(psrs, coefffunc, components, T, common, name)`
-  — factory returning `matrix.ExtSignal`. Inspects `coefffunc`'s argspec
-  to classify args as pulsar-attribute / common / per-pulsar; vmaps over
-  pulsars. Independent of matrix-vs-mh path.
-- `deterministic.makecw_extsignal` — CW factory wrapping
-  `make_extsignal_fourier` with `makefourier_binary` as the coefficient
-  map.
-
-### `likelihood.py` changes
-
-- `ArrayLikelihood.__init__` gains `decenter=False` and `extsignals=None`.
-- `ArrayLikelihood.clogL` builds a `decenter_transform(params, c) -> (c, ldL)`
-  reparam closure when `decenter=True`. Bridges matrix.py kernels (which
-  expose `N.solve_2d(F)`) and metamath kernels (which expose
-  `N.make_solve` as a graph) via `metamatrix.func(N.make_solve)(F, params={})`.
-- Same `_eval_F` materialization for `self.vsm.Fs` items that may be
-  metamath concat graphs (from `mh.CompoundGP.F`).
-- `clogL` passes the combined `reparams + extsignals` to
-  `make_kernelproduct_gpcomponent`.
-
-## What's outstanding
-
-### Immediate: the one xfail
-
-`test_clogL_new_features[decenter+common_rn+global_hd]` — needs
-`mh.CompoundGP` to handle the **mixed-Phi case** (commongp + globalgp).
-matrix.VectorCompoundGP at this branch builds `multigp.prior = priorfunc`
-(a callable) and sets `multigp.Phi = None`, side-stepping the
-shape-incompatible Phi concat. mh.CompoundGP only does the concat path
-and dies on shape mismatch ((3, 60) commongp vs (84, 84) globalgp Phi.N).
-
-Concrete next step: in `mh.CompoundGP.__init__` or `.Phi`, detect when
-`gp.Phi.N` shapes differ across gps and instead build a `prior` callable
-following `matrix.VectorCompoundGP` lines 260-289. Then the existing
-`hasattr(commongp, 'prior')` branch in `make_kernelproduct_gpcomponent`
-takes care of the rest.
-
-### Tier 3 still missing
-
-- **`cglogL` (CG-MDL / Lanczos logdet)** in `ArrayLikelihood`. Entirely
-  matrix.py-side, no metamath equivalent. This is the biggest remaining
-  Tier-3 deliverable. Open design question: Lanczos is iterative and
-  doesn't fit the static graph DSL cleanly. May need a callable carve-out
-  similar to `make_sample`, or a different graph construct.
-
-### Path-toward-deletion items
-
-Per the staged migration plan above, after the test suite is exhaustive:
-
-1. Rewrite `signals.py` constructors to return metamath objects directly
-   (drop `matrix.NoiseMatrix1D_var(...)` in favor of
-   `mh.NoiseMatrix1D(...)`). After this, the monkeypatch becomes a no-op.
-2. Rewrite `likelihood.py` to import only metamath (`from . import matrix`
-   removed). The `isinstance(x, matrix.NoiseMatrix1D_var)` ndim dispatch
-   becomes `isinstance(x, mh.NoiseMatrix1D)`.
-3. Delete `matrix.py` and `tests/metamatrix/_patch.py`.
-4. Optionally rename `metamath.py` → `matrix.py` (it IS the matrix
-   subsystem at that point).
-
-These are mostly mechanical once the parity suite is complete.
-
-## What still needs to be sanity-checked
-
-Things I am reasonably confident about but haven't independently
-verified beyond "the parity test passes":
-
-- **`mh.NoiseMatrix.make_sample` for 2D Phi.** Tests cover 1D-diagonal
-  noise sampling; the 2D-cholesky branch is implemented but only
-  exercised through the GlobalLikelihood prior-draw path. Worth a
-  targeted test for 2D `make_sample` standalone.
-- **`mh.VectorWoodburyKernel.make_kernelproduct_gpcomponent`'s
-  `self.prior` branch.** The `else` branch (`P_var_inv` path) is
-  exercised by all current tests. The `if hasattr(self, 'prior')` branch
-  is reached only when `mh.CompoundGP.prior` is set — which currently
-  only happens via the (not yet implemented) mixed-Phi fallback. Once
-  that lands, the `prior` branch should be parity-tested too.
-- **Per-element vs full-matrix Pm shape under metamath.** The
-  metamatrix `matrix_inv` produces 3D batched diagonals (npsr, k, k)
-  where matrix.py's `VectorNoiseMatrix1D_var.make_inv` produces 2D
-  (npsr, k). I handle both via `Pm.ndim` dispatch in
-  `make_kernelproduct_gpcomponent`. The numerical results agree to
-  rtol=1e-10 in tests, but the 3D path does more arithmetic than
-  necessary — a small efficiency item, not a correctness one.
-- **The `getN` alias on `mh.NoiseMatrix`.** Added so `signals.py:134`
-  (`egp.Phi.getN`) keeps working under the patch. This is bridging code,
-  expected to die when `signals.py` switches to metamath construction
-  directly (migration step 1 above).
-- **The `regularize_FtNmF` symmetrization** in the matrix.py
-  `make_kernelproduct_gpcomponent`. I didn't carry this into the mh
-  version. matrix.py defaults this to False for double precision, so
-  the parity tests don't exercise the True branch. If anyone runs
-  single-precision or sets `regularize_FtNmF=True`, the mh path may
-  diverge slightly. Low risk for now but worth flagging.
-- **The `staged` return shape (`(logp, c)` vs `logp`).** Both code paths
-  match. Worth confirming downstream consumers handle the tuple form
-  (the rest of the codebase plus any sampler integration). Search:
-  `grep -rn 'clogL(' src/` after this branch settles.
-
-## Where to start next session
-
-1. Read this section and the parent architecture doc.
-2. Run `python -m pytest tests/metamatrix/ --no-cov` to confirm the
-   35-pass / 1-xfail baseline.
-3. The natural next chunk of work is the `mh.CompoundGP` mixed-Phi
-   prior fallback — it closes the last xfail and is the kind of
-   targeted improvement (a single method, clear contract, existing
-   parity oracle) that this branch is set up for.
-4. After that, the `cglogL` / Lanczos question is the last Tier-3 item
-   between here and "matrix.py can be deleted."
-
-The architecture doc above explains the design discipline ("collapse
-const/var into one graph, don't translate matrix.py"). The parity
-suite under `tests/metamatrix/` is the safety net — every addition
-should either flip an existing xfail to pass or add a new row covering
-a topology not yet tested.
-
+Do not use older “current state / next session” notes in git history as
+authoritative; the checklist and Sphinx guides supersede them.

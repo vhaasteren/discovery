@@ -410,6 +410,16 @@ refdelta twins, projection, PSD characterisation, reference wiring.
 
 Tutorial: [Single precision](advanced/single_precision).
 
+### 11.4 Design notes
+
+Durable ADRs and research math:
+
+- [Single-precision design](design/single_precision/README)
+- [ADR 0001–0004](design/single_precision/adr/0001-reference-is-a-frozen-covariance)
+- [Single-level increments](design/single_precision/research_refdelta)
+- [Nested / fused increments](design/single_precision/research_nested)
+- [Deferred SP work](design/single_precision/future)
+
 ---
 
 ## 12. Bug ports retained on both routes
@@ -443,28 +453,26 @@ These are real fixes, not migration scaffolding:
 
 ## 14. Deleting the legacy path (follow-up)
 
-When maintainers sign off:
-
-1. Generate goldens from the matrix route (`tests/metamatrix/goldens/`) with a
-   fixed seed; switch parity to golden comparison.
-2. Remove `_kernel_switch.py` and `tests/metamatrix/_patch.py`; drop
-   `mh_patched` route.
-3. Collapse `_kernels.py` to metamath-only; `set_mode("matrix")` raises.
-4. Delete `matrix.py` and `likelihood.py`; rename `likelihood_metamath.py` →
-   `likelihood.py`.
-5. Deprecate then remove `config(kernels=...)` (one release of no-op
-   `metamath` + hard error on `matrix` is a reasonable policy).
-6. Move or delete matrix-only unit tests; keep shared substrate tests under
-   `tests/metamatrix/` or `tests/`.
+When maintainers sign off after external review, follow the ordered cutover in
+[Deletion checklist](design/metamatrix/deletion_checklist) (goldens, drop
+monkeypatch route, collapse factory, delete `matrix.py` / legacy
+`likelihood.py`, deprecation policy, test/docs cleanup).
 
 Nothing in the current dual-path feature set should depend on those steps having
 happened.
+
+Constructor → parity-test map (historical audit, still useful):
+[parity_coverage.md](design/metamatrix/parity_coverage).
+
+House rules and graph rationale (design note):
+[architecture.md](design/metamatrix/architecture).
 
 ---
 
 ## 15. Pointers
 
 - User guide: [Metamatrix](metamatrix)
+- Design notes index: [design/](design/README)
 - Cookbook: [tutorials/cookbook_models](tutorials/cookbook_models)
 - API: [api/index](api/index)
 - Open multi-ExtSignal cross-term issue: [nanograv/discovery#137](https://github.com/nanograv/discovery/issues/137)

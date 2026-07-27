@@ -186,7 +186,7 @@ def makegp_improper(psr, fmat, constant=1.0e40, name='improperGP', variable=Fals
     # `project=True` marks this improper GP to be marginalized by orthogonal
     # projection (the exact flat-prior limit) rather than by feeding its huge
     # prior variance through the Woodbury solve -- the float32-safe path. See
-    # See docs/metamatrix_dev.md (timing-model projection).
+    # See docs/design/single_precision/ (timing-model projection).
     # Off by default, so existing models are byte-identical.
     gp.project = project
 

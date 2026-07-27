@@ -278,6 +278,7 @@ offers opt-in mitigations that leave the default `float64` path unchanged:
    flat-prior projection instead of a huge-variance improper prior (float32-safe).
 
 Details and numbers: [Single-precision tutorial](advanced/single_precision).
+Design notes (ADRs, research math): [docs/design/single_precision/](design/single_precision/README).
 Limitations worth knowing:
 
 - Fused reference+delta for the HD (global) path is the best-supported case.

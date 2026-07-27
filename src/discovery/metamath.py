@@ -7,8 +7,8 @@ decide what runs at trace time vs runtime. `mm.func` belongs at the outer
 boundary in `likelihood.py`, not inside methods here. `make_sample` is the
 one documented exception.
 
-See `docs/metamatrix_dev.md` for conventions and porting guidance
-before adding new methods.
+See `docs/metamatrix_dev.md` and `docs/design/metamatrix/architecture.md`
+for conventions and porting guidance before adding new methods.
 """
 
 import functools
@@ -101,7 +101,7 @@ def woodbury(g, y, Nsolve, F, Pinv):
 def woodbury_proj(g, y, Nwhiten, M, F, Pinv):
     """Marginal logL with the timing model M handled by *projection* instead of
     a huge-variance prior (the float32-safe path; see
-    docs/metamatrix_dev.md, timing-model projection).
+    docs/design/single_precision/ (timing-model projection).
 
     Same marginal likelihood as ``woodbury`` built from the combined basis
     ``[M | F]`` with a flat (sigma^2 -> infinity) prior on the M coefficients,
@@ -170,7 +170,7 @@ def woodbury_proj(g, y, Nwhiten, M, F, Pinv):
 def woodbury_refdelta(g, y, Nsolve, F, Pinv, Pinv_ref):
     """Marginal logL as a *reference + delta* expansion (Piece 2 'Half B'; the
     single-level test rung). See
-    docs/metamatrix_dev.md (reference+delta)
+    docs/design/single_precision/ (reference+delta)
     (sec. 2-3) and docs/adr/0001,0003.
 
     Instead of computing logL(theta) directly -- a catastrophic float32
@@ -349,8 +349,7 @@ def globalwoodbury_fused(g, projected, Pinv):
 def globalwoodbury_fused_refdelta(g, refconst, refincr, Pinv, Pinv_ref):
     """Reference+delta twin of ``globalwoodbury_fused`` -- the OUTER half of the
     fused two-level reference+delta (Piece 2 'Half B'; HD / CURN-with-IRN). See
-    docs/metamatrix_dev.md (nested reference+delta)
-    and piece2_fused_refdelta_plan.md (rung 2).
+    docs/design/single_precision/ (nested reference+delta).
 
     Consumes TWO separate graphs from ``vectorwoodburyjointsolve_refdelta`` (the
     inner rung) -- kept separate ON PURPOSE so the constant group folds away (see
@@ -537,8 +536,7 @@ def vectorwoodburyjointsolve(g, ys, Fs_outer, Nsolves, Fs_inner, Pinv):
 def vectorwoodburyjointsolve_refdelta(g, ys, Fs_outer, Nsolves, Fs_inner, Pinv, Pinv_ref):
     """Reference+delta twin of ``vectorwoodburyjointsolve`` -- the INNER half of the
     fused two-level reference+delta (Piece 2 'Half B'; HD / CURN-with-IRN). See
-    docs/metamatrix_dev.md (nested reference+delta)
-    and piece2_fused_refdelta_plan.md.
+    docs/design/single_precision/ (nested reference+delta).
 
     Same per-pulsar inner intrinsic-red-noise (IRN) solve as
     ``vectorwoodburyjointsolve``, but off a frozen inner reference covariance
@@ -1247,7 +1245,7 @@ class WoodburyProjKernel(Kernel):
     """Like ``WoodburyKernel`` but the improper timing model `M` is handled by
     *projection* (the flat-prior / float32-safe path) instead of a huge-variance
     (1e40) Gaussian prior. The remaining GP `F` (e.g. ECORR) is kept as an
-    ordinary Woodbury block. See `woodbury_proj` and docs/metamatrix_dev.md.
+    ordinary Woodbury block. See `woodbury_proj` and docs/design/single_precision/adr/0004-timing-model-projection.md.
 
     Drop-in for the per-pulsar noise in the fused array path: its `make_solve`
     returns the timing-projected inverse operator, so when the array kernel

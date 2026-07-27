@@ -1,8 +1,9 @@
-# Phase 3 — parity coverage sweep
+# Parity coverage (matrix ↔ metamath)
 
-_The deletion gate: every kernel constructor that production code or the
-example/tutorial notebooks actually trigger must be exercised by a parity
-route, OR be pinned as a documented `xfail` we close in Phase 4._
+Historical coverage audit: every kernel constructor that production code or
+the example/tutorial notebooks emit should be exercised by a parity route
+(or documented as out of scope). Living enforcement is `tests/metamatrix/`
+and `discovery.recipes`.
 
 Scope of "used": `signals.py` / `measurement_noise.py` / `deterministic.py`
 call sites, plus the builders invoked by `examples/*.ipynb` and
@@ -56,18 +57,18 @@ kernel constructors — they ride on the GP builders above.
   but the **likelihood path** is unsupported in metamath: an all-constant 2D GP
   prior reaches `metamath.CompoundGP._build_mixed_logprior`, which requires
   `gp.index` — a marginalized constant GP has none.
-  **Closed in Phase 4a:** `metamath.CompoundGP` now builds a real combined dense
+  **Closed:** `metamath.CompoundGP` now builds a real combined dense
   `Phi` (block-diagonal, promoting 1D blocks) for a mixed but *marginalized*
   compound, gating the coefficient-log-prior branch to the vector/decentered
   path. `test_pulsar.py::test_logL[fourier_variance_fixed]` passes (xfail removed).
 - **D — `CompoundGlobalGP`.** The Phase-2 factory fallthrough (globalgp passed
   as a *list*, e.g. HD + monopole). Originally lived only in `matrix.py` and
   built `matrix.NoiseMatrix1D_var` directly, so it couldn't consume metamath GP
-  priors. **Closed in Phase 4b:** relocated to `signals.CompoundGlobalGP`,
+  priors. **Closed:** relocated to `signals.CompoundGlobalGP`,
   backend-agnostic (factory + `utils.GlobalVariableGP`, reading only
   mode-neutral `gp.Phi.getN`/`.getN.params`/`gp.Phi_inv`). Both `likelihood.py`
   and `likelihood_metamath.py` now call it; `matrix.CompoundGlobalGP` is dead
-  code that goes with `matrix.py` in Phase 5. Routed by `test_global.py`'s
+  code that goes with `matrix.py` when the legacy path is removed. Routed by `test_global.py`'s
   `global_compound` (logL + conditional).
 
 ## Integration check — `cw_extsignal_example.ipynb`
@@ -85,10 +86,10 @@ Agreement at ~1e-9 relative. The CW/ExtSignal + global-HD + decenter path is
 sound in both modes at real scale. (The notebook's NUTS sampling cells were not
 run — out of scope for the kernel-parity check.)
 
-## Phase 3 result
+## Result
 
 All production / notebook-driven kernel constructors are now parity-routed.
 The two carry-overs (C `NoiseMatrix2D_novar`, D `CompoundGlobalGP`) were closed
-in **Phase 4** — see the updated dispositions above; there are no remaining
+later — see the updated dispositions above; there are no remaining
 `xfail`s. Every constructor the matrix oracle covers is now matched by the
-metamath path, so the oracle may be deleted in Phase 5.
+metamath path, so the oracle may be deleted when the legacy path is removed.

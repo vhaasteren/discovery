@@ -54,6 +54,18 @@ Discovery is a next-generation PTA data analysis package built on JAX.
 
    metamatrix
    metamatrix_dev
+   design/README
+   design/metamatrix/architecture
+   design/metamatrix/deletion_checklist
+   design/metamatrix/parity_coverage
+   design/single_precision/README
+   design/single_precision/future
+   design/single_precision/research_refdelta
+   design/single_precision/research_nested
+   design/single_precision/adr/0001-reference-is-a-frozen-covariance
+   design/single_precision/adr/0002-respect-fused-nesting-no-flattening
+   design/single_precision/adr/0003-reference-delta-is-opt-in
+   design/single_precision/adr/0004-timing-model-projection
 
 .. toctree::
    :maxdepth: 1

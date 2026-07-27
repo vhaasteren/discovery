@@ -1,10 +1,8 @@
 # Reference + delta likelihood: the analytic increments (Sec. IV–V distilled)
 
-Companion to `piece2_research_brief.md`. This works out the explicit increment
-formulas the brief asks for, fixes one point in the brief's plan (items 2 and 3
-must be **merged**, not computed separately), and states the sampled-white-noise
-decision. The derivations come from a set of notes; this document is
-self-contained and the notes are not needed downstream.
+Analytic increment formulas for the single-level reference+delta likelihood.
+Self-contained; companion nested/fused math is in
+[research_nested.md](research_nested.md).
 
 ---
 
