@@ -677,6 +677,15 @@ class ArrayLikelihood(summary.SummaryMixin):
             NmFtys = [NmF.T @ y for NmF, y in zip(NmFs, self.ys)]
             FtNmF, NmFty = matrix.jnparray(FtNmFs), matrix.jnparray(NmFtys)
 
+            ext_E0s = []
+            if self.extsignals:
+                for es in self.extsignals:
+                    E0_per = []
+                    for N, F, Fcw in zip(self.vsm.Ns, vsm_Fs, es.Fs):
+                        NmFcw, _ = _solve_2d(N, np.asarray(Fcw))
+                        E0_per.append(F.T @ NmFcw)
+                    ext_E0s.append(matrix.jnparray(E0_per))
+
             def decenter_transform(params, c):
                 cgp_list = (self.commongp if isinstance(self.commongp, list)
                             else [self.commongp])
@@ -695,12 +704,27 @@ class ArrayLikelihood(summary.SummaryMixin):
                 cf = matrix.matrix_factor(FtNmF.at[:, i1, i2].add(phis_invs), lower=True)
                 am = matrix.jsp.linalg.solve_triangular(
                     cf[0], c, trans=1, lower=cf[1])
-                mus = matrix.matrix_solve(cf, NmFty)
+                rhs = NmFty
+                if self.extsignals:
+                    for E0, es in zip(ext_E0s, self.extsignals):
+                        rhs = rhs - matrix.jnp.einsum(
+                            "ijk,ik->ij", E0, es.coeffs(params))
+                mus = matrix.matrix_solve(cf, rhs)
                 # Jacobian of f^-1 wrt xi: |L|; cf[0] is L^-1.
                 ldL = -matrix.jnp.logdet(cf[0][:, i1, i2])
 
                 return am + mus, ldL
-            decenter_transform.params = []
+            cgp_list = (self.commongp if isinstance(self.commongp, list)
+                        else [self.commongp])
+            cond_params = sum(
+                [list(gp.Phi.getN.params) for gp in cgp_list], [])
+            if self.globalgp is not None:
+                cond_params = cond_params + list(self.globalgp.Phi.getN.params)
+            ext_params = sum(
+                [list(getattr(es, "params", []))
+                 for es in (self.extsignals or [])],
+                [])
+            decenter_transform.params = sorted(set(cond_params + ext_params))
 
         if hasattr(commongp, 'prior'):
             self.vsm.prior = commongp.prior

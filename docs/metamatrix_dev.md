@@ -283,6 +283,13 @@ $\mu$ is a translation ($d\mu/d\xi=0$): it never enters the Jacobian. For any
 invertible $A$ the map is a bijection; “how well $A$ approximates the posterior”
 affects sampling efficiency, not correctness of the transformed density.
 
+With ExtSignals the centering right-hand side is
+$b_0 - \sum_e E_{0,e}\,a_{D,e}(\theta)$ with
+$E_{0,e}=W^\top N_0^{-1}F_{\mathrm{ext},e}$ baked at construction.
+$\mu$ is a translation in $\xi$ ($d\mu/d\xi=0$); `ldJ` is unchanged.
+`ArrayTransport` stacks $E_{0,e}$ to shape $(N_p,k,k_e)$ and uses
+`einsum('ijk,ik->ij', ...)`.
+
 ### 8.3 Conditioner precision contract
 
 | Kind | Meaning |
@@ -300,6 +307,8 @@ precisions raise at construction; live callables are checked in `validate`.
 - `Transport` — single-pulsar map; true `.params`; `validate`, `diagnostics`,
   `fingerprint`, optional ExtSignal centering and `softclip`.
 - `ArrayTransport` — batched equal-width transports (ragged is unsupported).
+  Batches ExtSignal centering (all-or-none, shared `coeffs` identity).
+  Still rejects `softclip`.
 - `MarginalTransport` — one external block whitened against **live** marginalized
   $C(\eta)$ via `kernel.make_kernelsolve(y_t, W_s)` (no duplicated TNT path).
   Metamath-only. Schema string `discovery-marginal-transport-v1` in fingerprint.

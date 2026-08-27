@@ -330,6 +330,36 @@ def extsignal_cw(psrs):
     )
 
 
+def decenter_extsignal_cw(psrs):
+    """Decentered intrinsic red noise plus a continuous-wave ExtSignal."""
+    T = ds.getspan(psrs)
+    return ds.ArrayLikelihood(
+        [_psl_skeleton(p) for p in psrs],
+        commongp=ds.makecommongp_fourier(psrs, ds.powerlaw, components=30,
+                                         T=T, name="rednoise"),
+        decenter=True,
+        extsignals=[
+            ds.makecw_extsignal(psrs, components=50, T=T, pulsarterm=True, name="cw"),
+        ],
+    )
+
+
+def decenter_extsignal_cw_global_hd(psrs):
+    """Decentered intrinsic red noise plus HD global GP and a continuous-wave ExtSignal."""
+    T = ds.getspan(psrs)
+    return ds.ArrayLikelihood(
+        [_psl_skeleton(p) for p in psrs],
+        commongp=ds.makecommongp_fourier(psrs, ds.powerlaw, components=30,
+                                         T=T, name="rednoise"),
+        globalgp=ds.makeglobalgp_fourier(psrs, ds.powerlaw, ds.hd_orf,
+                                         components=14, T=T, name="gw"),
+        decenter=True,
+        extsignals=[
+            ds.makecw_extsignal(psrs, components=50, T=T, pulsarterm=True, name="cw"),
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Ordered catalogs (drive the cookbook TOC; tests build their tables from these)
 # ---------------------------------------------------------------------------
@@ -344,5 +374,6 @@ GLOBAL = [no_global, global_hd, global_monopole, global_compound]
 
 ARRAY = [
     no_common, intrinsic_rn, intrinsic_plus_crn, intrinsic_rn_plus_global_hd,
-    decenter_intrinsic_rn, decenter_intrinsic_rn_global_hd, means_on_commongp, extsignal_cw,
+    decenter_intrinsic_rn, decenter_intrinsic_rn_global_hd, means_on_commongp,
+    extsignal_cw, decenter_extsignal_cw, decenter_extsignal_cw_global_hd,
 ]

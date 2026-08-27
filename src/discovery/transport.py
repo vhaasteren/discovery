@@ -518,6 +518,11 @@ class Transport:
                         f"center_extsignals '{esname}': psr_slot={slot} out of "
                         f"range for {len(Fs)} pulsar bases")
                 Fext = np.asarray(Fs[slot], dtype=np.float64)
+                if Fext.ndim != 2 or Fext.shape[1] < 1:
+                    raise ValueError(
+                        f"center_extsignals '{esname}': Fs[{slot}] must be "
+                        f"2-D (n_toa, k_ext) with k_ext >= 1; got "
+                        f"shape {Fext.shape}")
                 if Fext.shape[0] != self._ntoa:
                     raise ValueError(
                         f"center_extsignals '{esname}': Fs[{slot}] has "
@@ -721,6 +726,63 @@ class Transport:
 # ArrayTransport
 # --------------------------------------------------------------------------
 
+def _batched_extsignals(transports):
+    """Stack per-pulsar Transport._extsignals into (E0, coeffs, name) triples.
+
+    E0 is (npsr, k, k_ext). coeffs is the shared ExtSignal.coeffs callable
+    returning (npsr, k_ext). All-or-none; same names, same coeffs identity,
+    psr_slot=i in pulsar order, equal k_ext.
+    """
+    flags = [bool(getattr(t, "_extsignals", None)) for t in transports]
+    if not any(flags):
+        return []
+    if not all(flags):
+        raise ValueError(
+            "ArrayTransport requires all-or-none ExtSignal centering")
+    n_es = {len(t._extsignals) for t in transports}
+    if len(n_es) != 1:
+        raise ValueError(
+            "ArrayTransport ExtSignal centering: pulsars disagree on the "
+            f"number of ExtSignals {sorted(n_es)}")
+    npsr = len(transports)
+    k = transports[0].dimension
+    batched = []
+    for e in range(n_es.pop()):
+        names = [t._extsignals[e][3] for t in transports]
+        if len(set(names)) != 1:
+            raise ValueError(
+                f"ArrayTransport ExtSignal names disagree at entry {e}: "
+                f"{names}")
+        coeffs_list = [t._extsignals[e][1] for t in transports]
+        if len({id(c) for c in coeffs_list}) != 1:
+            raise ValueError(
+                "ArrayTransport ExtSignal centering requires the same "
+                "coeffs callable on every pulsar (pass the same ExtSignal "
+                "list to each Transport)")
+        slots = [t._extsignals[e][2] for t in transports]
+        if slots != list(range(npsr)):
+            raise ValueError(
+                "ArrayTransport ExtSignal centering requires psr_slot=i "
+                f"in pulsar order; got slots {slots}")
+        E0s = [np.asarray(t._extsignals[e][0]) for t in transports]
+        if any(E.ndim != 2 for E in E0s):
+            raise ValueError(
+                f"ArrayTransport ExtSignal '{names[0]}': each E0 must be "
+                f"2-D (k, k_ext); got {[E.shape for E in E0s]}")
+        shapes = {E.shape for E in E0s}
+        if len(shapes) != 1:
+            raise ValueError(
+                f"ArrayTransport ExtSignal '{names[0]}' has unequal E0 "
+                f"shapes across pulsars: {sorted(shapes)}")
+        (k_i, k_ext), = shapes
+        if k_i != k:
+            raise ValueError(
+                f"ArrayTransport ExtSignal '{names[0]}': E0 has {k_i} "
+                f"rows; transport dimension is {k}")
+        batched.append((kh.jnparray(np.stack(E0s)), coeffs_list[0], names[0]))
+    return batched
+
+
 class ArrayTransport:
     """Per-pulsar transports behind one array reparam.
 
@@ -730,7 +792,11 @@ class ArrayTransport:
         rectangular (npsr, k) array, so ragged transports cannot pass through
         it; ragged support is a non-goal);
       - all-or-none centering (mixed centering would silently shift some
-        pulsars' coordinates and not others').
+        pulsars' coordinates and not others');
+      - all-or-none ExtSignal centering, with the same ExtSignal list in the
+        same order on every pulsar (equal k_ext, shared coeffs callable,
+        psr_slot=i);
+      - no softclip (still per-pulsar only).
     """
 
     def __init__(self, transports):
@@ -746,12 +812,9 @@ class ArrayTransport:
         centers = {t.center for t in transports}
         if len(centers) != 1:
             raise ValueError("ArrayTransport requires all-or-none centering")
-        if any(getattr(t, '_extsignals', None) or getattr(t, '_softclip', None)
-               for t in transports):
-            raise ValueError(
-                "ArrayTransport does not support per-pulsar ExtSignal centering "
-                "or softclip; the ragged joint path loops per-pulsar Transport "
-                "objects instead")
+        if any(getattr(t, "_softclip", None) for t in transports):
+            raise ValueError("ArrayTransport does not support softclip")
+        self._extsignals = _batched_extsignals(transports)
 
         self.transports = transports
         self.dimension = dims[0]
@@ -779,7 +842,11 @@ class ArrayTransport:
         am = kh.jsp.linalg.solve_triangular(cf[0], c, trans=1, lower=cf[1])
         ldJ = -kh.jnp.logdet(cf[0][:, i1, i2])            # summed, as today
         if self._b0 is not None:
-            am = am + kh.jsp.linalg.cho_solve(cf, self._b0)
+            rhs = self._b0
+            for E0, coeffs, _name in self._extsignals:
+                ccw = kh.jnp.asarray(coeffs(params))      # (npsr, k_ext)
+                rhs = rhs - kh.jnp.einsum("ijk,ik->ij", E0, ccw)
+            am = am + kh.jsp.linalg.cho_solve(cf, rhs)
         return am, ldJ
 
     def as_reparam(self):
@@ -797,7 +864,15 @@ class ArrayTransport:
         return rp
 
     def validate(self, params):
-        return [t.validate(params) for t in self.transports]
+        out = [t.validate(params) for t in self.transports]
+        for E0, coeffs, name in self._extsignals:
+            ccw = np.asarray(coeffs(params))
+            npsr, k_ext = self.npsr, int(np.asarray(E0).shape[-1])
+            if ccw.shape != (npsr, k_ext):
+                raise ValueError(
+                    f"ArrayTransport ExtSignal '{name}': coeffs(params) has "
+                    f"shape {ccw.shape}; expected ({npsr}, {k_ext})")
+        return out
 
     def diagnostics(self, params=None, noise_solve=None):
         """Aggregate per-pulsar diagnostics.
@@ -812,7 +887,7 @@ class ArrayTransport:
                 raise ValueError(
                     f"ArrayTransport diagnostics expected {self.npsr} "
                     f"noise solves; got {len(solves)}")
-        return {
+        out = {
             "per_pulsar": [
                 t.diagnostics(params=params, noise_solve=s)
                 for t, s in zip(self.transports, solves)
@@ -821,6 +896,9 @@ class ArrayTransport:
             "npsr": self.npsr,
             "params": list(self.params),
         }
+        if self._extsignals:
+            out["center_extsignals"] = [name for *_, name in self._extsignals]
+        return out
 
     def fingerprint(self):
         """Stable structural digest of the array transport (see

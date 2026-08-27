@@ -120,6 +120,8 @@ NEW_CLOGL_ROWS = [
     pytest.param(R.decenter_intrinsic_rn_global_hd,  id="decenter+intrinsic_rn+global_hd"),
     pytest.param(R.means_on_commongp,             id="means_on_commongp"),
     pytest.param(R.extsignal_cw,                  id="extsignal_cw"),
+    pytest.param(R.decenter_extsignal_cw,            id="decenter+extsignal_cw"),
+    pytest.param(R.decenter_extsignal_cw_global_hd,  id="decenter+extsignal_cw+global_hd"),
 ]
 
 

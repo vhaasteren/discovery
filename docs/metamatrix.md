@@ -216,27 +216,40 @@ Requirements for `decenter=True`:
   `Transport` instead (below).
 - Mutually exclusive with `transport=...`.
 
+When `extsignals=` is also set, `decenter=True` subtracts those deterministic
+signals from the centering residual (the Fourier coefficients are centered on
+the ExtSignal-subtracted data). The Jacobian does not depend on ExtSignal
+parameters. An explicit `transport=` is caller-owned and is not rewritten
+from `extsignals`. `transport=` is metamath-only (`likelihood.py` has no
+such argument).
+
 ### Explicit transport
 
 ```python
 from discovery import transport as tr
 
-blocks = [
-    tr.gp_block(rn_gp, psr_slot=i)
-    for i, rn_gp in enumerate(commongp)  # pattern depends on your model
-]
-# or external bases:
-# blocks.append(tr.array_block(F, {"timing": slice(0, k)}, precision, name="timing"))
-
-t = tr.Transport(
-    blocks,
-    noise_solve=tr.reference_noise_frozen(kernel, params0),
-    y=residuals,
-    center=True,
-)
-# optional: ExtSignal-subtracted centering, softclip={name: zmax}
-al = ds.ArrayLikelihood(psls, commongp=commongp, transport=t)
+npsr = len(psls)
+per = []
+for i, psl in enumerate(psls):
+    blocks = [tr.gp_block(commongp, psr_slot=i)]
+    if globalgp is not None:
+        blocks.append(tr.globalgp_curn_block(globalgp, i, npsr))
+    per.append(tr.Transport(
+        blocks,
+        reference_noise=tr.reference_noise_frozen(psl.N, params0={}),
+        reference_residual=psl.y,
+        center=True,
+        center_extsignals=extsignals,   # same list on every pulsar
+        psr_slot=i,
+    ))
+t = tr.ArrayTransport(per)
+al = ds.ArrayLikelihood(psls, commongp=commongp, transport=t,
+                        extsignals=extsignals)
 ```
+
+`ArrayTransport` batches ExtSignal centering when every per-pulsar `Transport`
+was built with the same `center_extsignals` list and `psr_slot=i`. It still
+rejects `softclip`. Explicit `transport=` is metamath-only.
 
 Helpers:
 
@@ -257,7 +270,8 @@ Failure semantics (user-visible):
 - Runtime `apply` under JAX is NaN-propagating (no silent floors on prior precision).
 
 Recipes that wrap common decenter patterns live in `discovery.recipes`
-(`decenter_intrinsic_rn`, `decenter_intrinsic_rn_global_hd`, …).
+(`decenter_intrinsic_rn`, `decenter_intrinsic_rn_global_hd`,
+`decenter_extsignal_cw`, `decenter_extsignal_cw_global_hd`).
 
 ## Single precision (float32) and reference+delta
 

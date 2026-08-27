@@ -36,7 +36,7 @@ Column meanings:
 | `CompoundDelay` | `makedelay`/`makedelay_binary` | ✅ | **`delay` (added)** | ✅ closed |
 | `WoodburyKernel`, `CompoundGP`, `VectorCompoundGP`, `VectorWoodburyKernel_varP` | likelihood layer | ✅ | all model builders | ✅ |
 | `CompoundGlobalGP` | globalgp-as-list (HD+monopole) | ✅ (Phase 4b) | **`global_compound`** | ✅ closed (Phase 4b) |
-| `ExtSignal` (CW) | `makecw_extsignal` | ✅ (marker in `utils`) | `extsignal_cw` | ✅ |
+| `ExtSignal` (CW) | `makecw_extsignal` | ✅ (marker in `utils`) | `extsignal_cw`, `decenter_extsignal_cw`, `decenter_extsignal_cw_global_hd` (`test_clogL_new_features`) | ✅ |
 
 PSD/ORF helpers (`powerlaw`, `freespectrum`, `brokenpowerlaw`,
 `make_combined_crn`, `makepowerlaw_crn`, `hd_orf`, …) are prior functions, not
@@ -73,18 +73,9 @@ kernel constructors — they ride on the GP builders above.
 
 ## Integration check — `cw_extsignal_example.ipynb`
 
-Ran the notebook's model build + `clogL`/`logL` at its fixed test point (5
-pulsars, `n_cw=60`, CW + HD global GP + decentered common red noise) under both
-kernel modes via `ds.config(kernels=...)`:
-
-```
-clogL  matrix=840535.522183  metamath=840535.522183  diff=5.8e-10
-logL   matrix=840636.442313  metamath=840636.442313  diff=5.8e-10
-```
-
-Agreement at ~1e-9 relative. The CW/ExtSignal + global-HD + decenter path is
-sound in both modes at real scale. (The notebook's NUTS sampling cells were not
-run — out of scope for the kernel-parity check.)
+Pre-change CW+decenter numbers omitted; they assumed centering that did not
+subtract the ExtSignal. See `test_clogL_new_features` ids
+`decenter+extsignal_cw` and `decenter+extsignal_cw+global_hd`. (NUTS not run.)
 
 ## Result
 

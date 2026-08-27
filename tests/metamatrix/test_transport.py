@@ -948,15 +948,416 @@ def test_softclip_unknown_block_raises(psr, metamath_backend):
                      center=True, softclip={"nope": 4.0})
 
 
-def test_array_transport_rejects_extsignals_and_softclip(psr, metamath_backend):
+def test_array_transport_rejects_softclip(psr, metamath_backend):
     r0 = np.asarray(psr.residuals, dtype=float)
     F = r0[:, None]
     ref = _diag_ref(psr)
-    t = tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
-                     reference_noise=ref, reference_residual=r0, center=True,
-                     softclip={"timing": 4.0})
-    with pytest.raises(ValueError, match="does not support"):
+    t = tr.Transport(
+        [tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=ref,
+        reference_residual=r0,
+        center=True,
+        softclip={"timing": 4.0},
+    )
+    with pytest.raises(ValueError, match="does not support softclip"):
         tr.ArrayTransport([t])
+
+
+def test_array_transport_batches_extsignal_centering(psrs, metamath_backend):
+    """ArrayTransport.apply equals stacking per-pulsar Transport.apply."""
+    rng = np.random.default_rng(4)
+    npsr, k, k_ext = 2, 3, 2
+    Fs_ext, packs = [], []
+    for psr in psrs[:npsr]:
+        r0 = np.asarray(psr.residuals, dtype=float)
+        F = r0[:, None] * np.array([[1.0, 0.5, -0.3]])
+        Fs_ext.append(rng.standard_normal((r0.shape[0], k_ext)))
+        packs.append((psr, r0, F))
+    es = _FakeExtSignal(Fs_ext, k_ext, name="cw")
+    transports = [
+        tr.Transport(
+            [tr.array_block(F, {"tim": slice(0, k)}, 1.0, name="timing")],
+            reference_noise=_diag_ref(psr),
+            reference_residual=r0,
+            center=True,
+            center_extsignals=[es],
+            psr_slot=i,
+        )
+        for i, (psr, r0, F) in enumerate(packs)
+    ]
+    at = tr.ArrayTransport(transports)
+
+    assert set(es.coeffs.params) <= set(at.params)
+    assert at.diagnostics()["center_extsignals"] == ["cw"]
+
+    params = {"cw_c0": 0.7, "cw_c1": -0.3}
+    xi = kh.jnp.zeros((npsr, k))
+    q_batch, ldJ_batch = at.apply(params, xi)
+    q_loop, ldJ_loop = [], 0.0
+    for i, t in enumerate(transports):
+        qi, ldi = t.apply(params, xi[i])
+        q_loop.append(np.asarray(qi))
+        ldJ_loop = ldJ_loop + ldi
+    np.testing.assert_allclose(np.asarray(q_batch), np.stack(q_loop), rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(np.asarray(ldJ_batch), np.asarray(ldJ_loop), rtol=1e-12, atol=0.0)
+
+    # z=0 mean depends on the ExtSignal (loud deterministic shift).
+    q0, _ = at.apply({"cw_c0": 0.0, "cw_c1": 0.0}, xi)
+    assert np.linalg.norm(np.asarray(q_batch) - np.asarray(q0)) > 1e-6
+
+    # ldJ is independent of ExtSignal parameters.
+    _, ldJ_zero = at.apply({"cw_c0": 0.0, "cw_c1": 0.0}, xi)
+    np.testing.assert_allclose(np.asarray(ldJ_batch), np.asarray(ldJ_zero), rtol=1e-12, atol=0.0)
+
+
+def test_array_transport_extsignals_all_or_none(psrs, metamath_backend):
+    psr0, psr1 = psrs[0], psrs[1]
+    r0 = np.asarray(psr0.residuals, dtype=float)
+    r1 = np.asarray(psr1.residuals, dtype=float)
+    F0 = r0[:, None]
+    F1 = r1[:, None]
+    es = _FakeExtSignal([F0], 1, name="cw")
+    t0 = tr.Transport(
+        [tr.array_block(F0, {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=_diag_ref(psr0),
+        reference_residual=r0,
+        center=True,
+        center_extsignals=[es],
+        psr_slot=0,
+    )
+    t1 = tr.Transport(
+        [tr.array_block(F1, {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=_diag_ref(psr1),
+        reference_residual=r1,
+        center=True,
+    )
+    with pytest.raises(ValueError, match="all-or-none ExtSignal centering"):
+        tr.ArrayTransport([t0, t1])
+
+
+def test_array_transport_extsignals_require_shared_coeffs(psrs, metamath_backend):
+    psr0, psr1 = psrs[0], psrs[1]
+    r0 = np.asarray(psr0.residuals, dtype=float)
+    r1 = np.asarray(psr1.residuals, dtype=float)
+    F0 = r0[:, None]
+    F1 = r1[:, None]
+    es0 = _FakeExtSignal([F0, F1], 1, name="cw")
+    es1 = _FakeExtSignal([F0, F1], 1, name="cw")  # different coeffs identity
+    t0 = tr.Transport(
+        [tr.array_block(F0, {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=_diag_ref(psr0),
+        reference_residual=r0,
+        center=True,
+        center_extsignals=[es0],
+        psr_slot=0,
+    )
+    t1 = tr.Transport(
+        [tr.array_block(F1, {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=_diag_ref(psr1),
+        reference_residual=r1,
+        center=True,
+        center_extsignals=[es1],
+        psr_slot=1,
+    )
+    with pytest.raises(ValueError, match="same coeffs callable"):
+        tr.ArrayTransport([t0, t1])
+
+
+def _two_psr_timing_transports(psrs, es, *, slots=None, extra_es=None):
+    """Two 1-column timing transports sharing `es` (and optional `extra_es`)."""
+    slots = [0, 1] if slots is None else slots
+    out = []
+    for i, sl in enumerate(slots):
+        psr = psrs[i]
+        r0 = np.asarray(psr.residuals, dtype=float)
+        F = r0[:, None]
+        kwargs = dict(center=True, center_extsignals=[es] + (extra_es or []), psr_slot=sl)
+        out.append(
+            tr.Transport(
+                [tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
+                reference_noise=_diag_ref(psr),
+                reference_residual=r0,
+                **kwargs,
+            )
+        )
+    return out
+
+
+def test_array_transport_extsignals_name_mismatch(psrs, metamath_backend):
+    F0 = np.asarray(psrs[0].residuals)[:, None]
+    F1 = np.asarray(psrs[1].residuals)[:, None]
+    es_a = _FakeExtSignal([F0, F1], 1, name="cw")
+    es_b = _FakeExtSignal([F0, F1], 1, name="other")
+    # Force the same coeffs identity so the name check is what fires.
+    es_b.coeffs = es_a.coeffs
+    t0, t1 = _two_psr_timing_transports(psrs, es_a)
+    t1 = tr.Transport(
+        [tr.array_block(F1, {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=_diag_ref(psrs[1]),
+        reference_residual=np.asarray(psrs[1].residuals, dtype=float),
+        center=True,
+        center_extsignals=[es_b],
+        psr_slot=1,
+    )
+    with pytest.raises(ValueError, match="names disagree"):
+        tr.ArrayTransport([t0, t1])
+
+
+def test_array_transport_extsignals_count_mismatch(psrs, metamath_backend):
+    F0 = np.asarray(psrs[0].residuals)[:, None]
+    F1 = np.asarray(psrs[1].residuals)[:, None]
+    es1 = _FakeExtSignal([F0, F1], 1, name="cw")
+    es2 = _FakeExtSignal([F0, F1], 1, name="cw2")
+    t0 = _two_psr_timing_transports(psrs, es1, extra_es=[es2])[0]
+    t1 = _two_psr_timing_transports(psrs, es1)[1]
+    with pytest.raises(ValueError, match="number of ExtSignals"):
+        tr.ArrayTransport([t0, t1])
+
+
+def test_array_transport_extsignals_bad_slots(psrs, metamath_backend):
+    # Each Transport reads Fs[psr_slot], so the stored slot's basis must
+    # match that pulsar's n_toa. Both claim slot 0 so the order check fires.
+    r0 = np.asarray(psrs[0].residuals, dtype=float)
+    r1 = np.asarray(psrs[1].residuals, dtype=float)
+    es0 = _FakeExtSignal([r0[:, None], r1[:, None]], 1, name="cw")
+    es1 = _FakeExtSignal([r1[:, None], r0[:, None]], 1, name="cw")
+    es1.coeffs = es0.coeffs
+    t0 = tr.Transport(
+        [tr.array_block(r0[:, None], {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=_diag_ref(psrs[0]),
+        reference_residual=r0,
+        center=True,
+        center_extsignals=[es0],
+        psr_slot=0,
+    )
+    t1 = tr.Transport(
+        [tr.array_block(r1[:, None], {"tim": slice(0, 1)}, 1.0, name="timing")],
+        reference_noise=_diag_ref(psrs[1]),
+        reference_residual=r1,
+        center=True,
+        center_extsignals=[es1],
+        psr_slot=0,
+    )
+    with pytest.raises(ValueError, match="psr_slot=i"):
+        tr.ArrayTransport([t0, t1])
+
+
+def test_array_transport_validate_rejects_bad_coeff_shape(psrs, metamath_backend):
+    F0 = np.asarray(psrs[0].residuals)[:, None]
+    F1 = np.asarray(psrs[1].residuals)[:, None]
+    es = _FakeExtSignal([F0, F1], 2, name="cw")
+
+    def bad(params):
+        return kh.jnp.asarray([params["cw_c0"], params["cw_c1"]])  # (2,) not (2, 2)
+
+    bad.params = es.coeffs.params
+    es.coeffs = bad
+    at = tr.ArrayTransport(_two_psr_timing_transports(psrs, es))
+    with pytest.raises(ValueError, match="coeffs\\(params\\) has shape"):
+        at.validate({"cw_c0": 0.1, "cw_c1": -0.2})
+
+
+def test_transport_rejects_1d_extsignal_basis(psr, metamath_backend):
+    r0 = np.asarray(psr.residuals, dtype=float)
+    F = r0[:, None]
+    es = _FakeExtSignal([r0], 1, name="cw")  # Fs[0] is 1-D
+    with pytest.raises(ValueError, match="must be 2-D"):
+        tr.Transport(
+            [tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
+            reference_noise=_diag_ref(psr),
+            reference_residual=r0,
+            center=True,
+            center_extsignals=[es],
+            psr_slot=0,
+        )
+
+
+def test_array_transport_sums_two_extsignals(psrs, metamath_backend):
+    rng = np.random.default_rng(5)
+    npsr, k_ext = 2, 2
+    Fs_a, Fs_b, trans = [], [], []
+    for i, psr in enumerate(psrs[:npsr]):
+        r0 = np.asarray(psr.residuals, dtype=float)
+        F = r0[:, None] * np.array([[1.0, 0.5, -0.3]])
+        Fa = rng.standard_normal((r0.shape[0], k_ext))
+        Fb = rng.standard_normal((r0.shape[0], k_ext))
+        Fs_a.append(Fa)
+        Fs_b.append(Fb)
+        trans.append((psr, r0, F))
+    esa = _FakeExtSignal(Fs_a, k_ext, name="cwa")
+    esb = _FakeExtSignal(Fs_b, k_ext, name="cwb")
+    transports = [
+        tr.Transport(
+            [tr.array_block(F, {"tim": slice(0, 3)}, 1.0, name="timing")],
+            reference_noise=_diag_ref(psr),
+            reference_residual=r0,
+            center=True,
+            center_extsignals=[esa, esb],
+            psr_slot=i,
+        )
+        for i, (psr, r0, F) in enumerate(trans)
+    ]
+    at = tr.ArrayTransport(transports)
+    params = {"cwa_c0": 0.4, "cwa_c1": -0.1, "cwb_c0": 0.2, "cwb_c1": 0.3}
+    xi = kh.jnp.zeros((npsr, 3))
+    q_batch, _ = at.apply(params, xi)
+    q_loop = np.stack([np.asarray(t.apply(params, xi[i])[0]) for i, t in enumerate(transports)])
+    np.testing.assert_allclose(np.asarray(q_batch), q_loop, rtol=1e-10, atol=1e-12)
+
+
+def test_decenter_sugar_centers_extsignals(psrs, metamath_backend):
+    model = R.decenter_extsignal_cw(psrs)
+    ys = model._coefficient_assembly[1]
+    at = model._build_decenter_transport(ys)
+    cw_names = set(model.extsignals[0].params)  # includes {psr}_cw_phi_psr
+    assert cw_names
+    assert cw_names <= set(at.params)
+    assert cw_names <= set(at.as_reparam().params)
+    assert at.diagnostics()["center_extsignals"] == ["cw"]
+
+
+def test_decenter_sugar_without_extsignals_unchanged_params(psrs, metamath_backend):
+    """No ExtSignal names appear on a GP-only decenter transport."""
+    model = R.decenter_intrinsic_rn(psrs)
+    ys = model._coefficient_assembly[1]
+    at = model._build_decenter_transport(ys)
+    assert "center_extsignals" not in at.diagnostics()
+    cw_names = set(R.decenter_extsignal_cw(psrs).extsignals[0].params)
+    assert cw_names.isdisjoint(at.params)
+
+
+def test_explicit_transport_does_not_absorb_likelihood_extsignals(psrs, metamath_backend):
+    """Caller-owned transport= is not rewritten from al.extsignals."""
+    T = ds.getspan(psrs)
+    commongp = ds.makecommongp_fourier(psrs, ds.powerlaw, components=10, T=T, name="rednoise")
+    # Same frozen-WN skeleton as recipes._psl_skeleton (required so
+    # reference_noise_frozen(..., params0={}) succeeds).
+    psls = [
+        ds.PulsarLikelihood(
+            [
+                p.residuals,
+                ds.makenoise_measurement(p, p.noisedict),
+                ds.makegp_ecorr(p, p.noisedict),
+                ds.makegp_timing(p, svd=True),
+            ]
+        )
+        for p in psrs
+    ]
+    cw = ds.makecw_extsignal(psrs, components=8, T=T, pulsarterm=True, name="cw")
+    per = []
+    for i, psl in enumerate(psls):
+        per.append(
+            tr.Transport(
+                [tr.gp_block(commongp, psr_slot=i)],
+                reference_noise=tr.reference_noise_frozen(psl.N, params0={}, description=f"n{i}"),
+                reference_residual=np.asarray(psl.y),
+                center=True,
+            )
+        )
+        # no center_extsignals
+    at = tr.ArrayTransport(per)
+    al = ds.ArrayLikelihood(psls, commongp=commongp, transport=at, extsignals=[cw])
+    assert "center_extsignals" not in al.transport.diagnostics()
+    assert set(cw.params).isdisjoint(al.transport.params)
+
+
+def test_apply_grad_log10_h0_is_the_centering_path(psrs, metamath_backend):
+    """d(apply)/d(cw_log10_h0) is finite, matches FD, and is absent without centering."""
+    model = R.decenter_extsignal_cw(psrs)
+    ys = model._coefficient_assembly[1]
+    at = model._build_decenter_transport(ys)
+    name = "cw_log10_h0"
+    assert name in at.params
+    np.random.seed(0)
+    p0 = ds.sample_uniform(list(at.params))
+    p0[name] = -6.0  # loud enough that dμ/d log10_h0 is not ~0
+    xi = kh.jnp.zeros((at.npsr, at.dimension))
+
+    def mean_norm(x):
+        q = dict(p0)
+        q[name] = x
+        a, _ = at.apply(q, xi)
+        return kh.jnp.sum(a * a)
+
+    x0 = float(p0[name])
+    g = float(jax.grad(mean_norm)(x0))
+    assert np.isfinite(g)
+    assert abs(g) > 1e-8
+    eps = 1e-5
+    fd = float((mean_norm(x0 + eps) - mean_norm(x0 - eps)) / (2 * eps))
+    np.testing.assert_allclose(g, fd, rtol=2e-3, atol=1e-3)
+
+    # Same model, caller-owned transport without center_extsignals: zero.
+    psls, commongp = model.psls, model.commongp
+    per = []
+    for i, psl in enumerate(psls):
+        blocks = [tr.gp_block(commongp, psr_slot=i)]
+        per.append(
+            tr.Transport(
+                blocks,
+                reference_noise=tr.reference_noise_frozen(psl.N, params0={}, description=f"n{i}"),
+                reference_residual=np.asarray(ys[i]),
+                center=True,
+            )
+        )
+    at_bare = tr.ArrayTransport(per)
+    assert name not in at_bare.params
+
+    def mean_norm_bare(x):
+        q = dict(p0)
+        q[name] = x
+        a, _ = at_bare.apply(q, xi)
+        return kh.jnp.sum(a * a)
+
+    assert abs(float(jax.grad(mean_norm_bare)(x0))) < 1e-12
+
+
+def test_array_transport_fingerprint_changes_with_extsignals(psrs, metamath_backend):
+    model = R.decenter_extsignal_cw(psrs)
+    ys = model._coefficient_assembly[1]
+    at_cw = model._build_decenter_transport(ys)
+    at_plain = R.decenter_intrinsic_rn(psrs)._build_decenter_transport(
+        R.decenter_intrinsic_rn(psrs)._coefficient_assembly[1]
+    )
+    assert at_cw.fingerprint().startswith("sha256:")
+    assert at_cw.fingerprint() != at_plain.fingerprint()
+    at_cw2 = R.decenter_extsignal_cw(psrs)._build_decenter_transport(
+        R.decenter_extsignal_cw(psrs)._coefficient_assembly[1]
+    )
+    assert at_cw.fingerprint() == at_cw2.fingerprint()
+
+
+def test_decenter_extsignal_cross_matches_residual(psrs, metamath_backend):
+    """clogl_form residual vs cross agree when ExtSignal centering is on."""
+    T = ds.getspan(psrs)
+    commongp = ds.makecommongp_fourier(psrs, ds.powerlaw, components=10, T=T, name="rednoise")
+    psls = [
+        ds.PulsarLikelihood(
+            [
+                p.residuals,
+                ds.makenoise_measurement(p, p.noisedict),
+                ds.makegp_ecorr(p, p.noisedict),
+                ds.makegp_timing(p, svd=True),
+            ]
+        )
+        for p in psrs
+    ]
+    cw = ds.makecw_extsignal(psrs, components=8, T=T, pulsarterm=True, name="cw")
+    kwargs = dict(psls=psls, commongp=commongp, decenter=True, extsignals=[cw])
+    cross = ds.ArrayLikelihood(**kwargs, clogl_form="cross")
+    resid = ds.ArrayLikelihood(**kwargs, clogl_form="residual")
+    rng = np.random.default_rng(1)
+    p0 = ds.sample_uniform([p for p in cross.clogL.params if not p.endswith(")")])
+    for p in cross.clogL.params:
+        if p.endswith(")"):
+            n = int(p[p.index("(") + 1 : -1])
+            p0[p] = 1e-6 * rng.standard_normal(n)
+    lo, ln = cross.clogL(p0), resid.clogL(p0)
+    if isinstance(lo, tuple):
+        np.testing.assert_allclose(float(lo[0]), float(ln[0]), rtol=1e-9, atol=1e-8)
+        np.testing.assert_allclose(np.asarray(lo[1]), np.asarray(ln[1]), rtol=1e-9, atol=1e-8)
+    else:
+        np.testing.assert_allclose(float(lo), float(ln), rtol=1e-9, atol=1e-8)
 
 
 # ==========================================================================

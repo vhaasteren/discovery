@@ -736,6 +736,11 @@ class ArrayLikelihood(summary.SummaryMixin):
         commongp (+ globalgp CURN view) blocks, per-pulsar frozen-noise
         reference, centered on the residuals `ys`.
 
+        When this likelihood has `extsignals`, they are passed as
+        `center_extsignals` so the centering translation subtracts the
+        deterministic signal. An explicit `transport=` is caller-owned and
+        is not modified here.
+
         `reference_noise_frozen(psl.N, params0={})` RAISES when the per-pulsar
         kernel has free parameters, converting the old closure's silent
         constant-N assumption into a diagnosed error. Callers with varying white
@@ -745,6 +750,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         from . import transport as _tr
         cgp_list = self.commongp if isinstance(self.commongp, list) else [self.commongp]
         npsr = len(self.psls)
+        ext = list(self.extsignals) if self.extsignals else None
         per_psr = []
         for i, psl in enumerate(self.psls):
             blocks = [_tr.gp_block(gp, psr_slot=i) for gp in cgp_list]
@@ -756,7 +762,8 @@ class ArrayLikelihood(summary.SummaryMixin):
                     psl.N, params0={},
                     description=f"frozen per-pulsar kernel "
                                 f"({getattr(psl, 'name', f'psl[{i}]')})"),
-                reference_residual=ys[i], center=True))
+                reference_residual=ys[i], center=True,
+                center_extsignals=ext, psr_slot=i))
         return _tr.ArrayTransport(per_psr)
 
     @functools.cached_property
@@ -825,7 +832,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         reparams = []
         if self.transport is not None:                # already validated eagerly
             reparams.append(self.transport.as_reparam())
-        elif self.decenter:                           # sugar: GP-only default
+        elif self.decenter:                           # sugar: GP + ExtSignal centering
             reparams.append(self._build_decenter_transport(ys).as_reparam())
         if self.transform is not None:
             reparams.extend(self.transform if isinstance(self.transform, (list, tuple))
