@@ -764,7 +764,16 @@ class ArrayLikelihood(summary.SummaryMixin):
                                 f"({getattr(psl, 'name', f'psl[{i}]')})"),
                 reference_residual=ys[i], center=True,
                 center_extsignals=ext, psr_slot=i))
-        return _tr.ArrayTransport(per_psr)
+        conditioners = [_tr.gp_array_conditioner(gp) for gp in cgp_list]
+        if self.globalgp is not None:
+            conditioners.append(
+                _tr.globalgp_curn_array_conditioner(self.globalgp, npsr)
+            )
+        return _tr.ArrayTransport(
+            per_psr,
+            conditioner_precision=_tr.concatenate_array_conditioners(
+                conditioners),
+        )
 
     @functools.cached_property
     def clogl_form_resolved(self):
@@ -852,6 +861,19 @@ class ArrayLikelihood(summary.SummaryMixin):
         # callable at the outer boundary; for an already-callable result it's
         # a no-op.
         return ffunc(loglike)
+
+    def make_packed_clogL(self, template_params=None):
+        """Build the opt-in packed ``(theta, xi)`` decentered ``clogL``.
+
+        The returned :class:`~discovery.packed.PackedClogL` evaluates the same
+        density as ``self.clogL``. Inputs are one hyperparameter vector
+        ``theta`` and one coefficient array ``xi`` of shape ``(npsr, k)``.
+        Raises :class:`~discovery.packed.PackedClogLUnsupported` if the model
+        is not a decentered cross-form array with a rectangular coefficient
+        layout. See ``docs/advanced/packed_clogl.md``.
+        """
+        from .packed import PackedClogL
+        return PackedClogL(self, template_params=template_params)
 
     @functools.cached_property
     def logL(self):

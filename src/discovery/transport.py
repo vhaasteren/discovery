@@ -236,7 +236,8 @@ def globalgp_curn_block(globalgp, psr_slot, npsr):
     getN = globalgp.Phi.getN
 
     def conditioner_precision(params, _i=psr_slot, _n=npsr):
-        return kh.jnp.diag(getN(params) ** -1).reshape((_n, -1))[_i]
+        diagonal = kh.jnp.diag(getN(params))
+        return (diagonal ** -1).reshape((_n, -1))[_i]
     conditioner_precision.params = list(getattr(getN, 'params', []))
 
     name = getattr(globalgp, 'gpname', 'gw')
@@ -245,6 +246,14 @@ def globalgp_curn_block(globalgp, psr_slot, npsr):
                                             F.shape[1], name),
                           conditioner_precision,
                           conditioner_kind="curn_inverse_marginal")
+
+
+def _legacy_globalgp_curn_precision(getN, psr_slot, npsr):
+    """Previous reciprocal-then-diagonal CURN view. Test/benchmark reference."""
+    def conditioner_precision(params, _i=psr_slot, _n=npsr):
+        return kh.jnp.diag(getN(params) ** -1).reshape((_n, -1))[_i]
+    conditioner_precision.params = list(getattr(getN, 'params', []))
+    return conditioner_precision
 
 
 # --------------------------------------------------------------------------
@@ -783,6 +792,64 @@ def _batched_extsignals(transports):
     return batched
 
 
+def _stacked_array_conditioner(transports):
+    """Current stacked per-pulsar conditioner, used as the default batched form."""
+    def precision(params):
+        return kh.jnp.stack([
+            kh.jnp.concatenate([
+                block.conditioner_precision(params)
+                for block in transport.blocks
+            ])
+            for transport in transports
+        ])
+    precision.params = sorted(set().union(
+        *(set(transport.params) for transport in transports)
+    ))
+    return precision
+
+
+def gp_array_conditioner(gp):
+    getN = gp.Phi.getN
+
+    def precision(params):
+        return kh.jnp.asarray(getN(params)) ** -1
+
+    precision.params = list(getN.params)
+    return precision
+
+
+def globalgp_curn_array_conditioner(globalgp, npsr):
+    separable = getattr(globalgp, "separable_prior", None)
+    if separable is not None:
+        def precision(params):
+            return separable.marginal_precision(params)
+
+        precision.params = list(separable.params)
+        return precision
+
+    getN = globalgp.Phi.getN
+
+    def precision(params):
+        covariance = kh.jnp.asarray(getN(params))
+        return 1.0 / kh.jnp.diag(covariance).reshape((npsr, -1))
+
+    precision.params = list(getN.params)
+    return precision
+
+
+def concatenate_array_conditioners(conditioners):
+    def precision(params):
+        return kh.jnp.concatenate(
+            [conditioner(params) for conditioner in conditioners],
+            axis=1,
+        )
+
+    precision.params = sorted(set().union(
+        *(set(conditioner.params) for conditioner in conditioners)
+    ))
+    return precision
+
+
 class ArrayTransport:
     """Per-pulsar transports behind one array reparam.
 
@@ -799,7 +866,7 @@ class ArrayTransport:
       - no softclip (still per-pulsar only).
     """
 
-    def __init__(self, transports):
+    def __init__(self, transports, *, conditioner_precision=None):
         transports = list(transports)
         if not transports:
             raise ValueError("ArrayTransport requires at least one Transport")
@@ -821,6 +888,12 @@ class ArrayTransport:
         self.npsr = len(transports)
         self.center = centers.pop()
         self.params = sorted(set().union(*[set(t.params) for t in transports]))
+        if conditioner_precision is None:
+            conditioner_precision = _stacked_array_conditioner(self.transports)
+        self._conditioner_precision = conditioner_precision
+        self.params = sorted(
+            set(self.params) | set(conditioner_precision.params)
+        )
 
         # batched bake: (npsr, k, k) and (npsr, k). This is the SAME batched
         # arithmetic as the decenter closure: preserve its call conventions.
@@ -829,10 +902,14 @@ class ArrayTransport:
                     if self.center else None)
 
     def _pinv(self, params):
-        return kh.jnp.stack([
-            kh.jnp.concatenate([b.conditioner_precision(params)
-                                for b in t.blocks])
-            for t in self.transports])                    # (npsr, k)
+        value = kh.jnp.asarray(self._conditioner_precision(params))
+        if value.shape != (self.npsr, self.dimension):
+            raise ValueError(
+                "batched conditioner precision has shape "
+                f"{value.shape}; expected "
+                f"({self.npsr}, {self.dimension})"
+            )
+        return value
 
     def apply(self, params, c):
         # c: (npsr, k) -- the array coefficient contract.
@@ -872,6 +949,16 @@ class ArrayTransport:
                 raise ValueError(
                     f"ArrayTransport ExtSignal '{name}': coeffs(params) has "
                     f"shape {ccw.shape}; expected ({npsr}, {k_ext})")
+        batched = np.asarray(self._pinv(params))
+        stacked = np.asarray(_stacked_array_conditioner(self.transports)(params))
+        if batched.shape != stacked.shape:
+            raise ValueError(
+                "batched conditioner shape "
+                f"{batched.shape} does not match stacked {stacked.shape}")
+        if not np.allclose(batched, stacked, rtol=1e-12, atol=0.0):
+            raise ValueError(
+                "batched conditioner differs from the stacked per-pulsar "
+                "reference")
         return out
 
     def diagnostics(self, params=None, noise_solve=None):

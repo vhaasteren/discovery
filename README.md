@@ -29,5 +29,6 @@ reference — is at **https://nanograv.github.io/discovery/**.
 
 Graph-backend (metamatrix) notes for users and developers live in the Sphinx
 docs under *Development* (`docs/metamatrix.md`, `docs/metamatrix_dev.md`).
-Durable design notes (ADRs, research math, deletion checklist) are under
-`docs/design/`.
+The packed ``(theta, xi)`` coefficient likelihood is documented under
+*Advanced Topics* (`docs/advanced/packed_clogl.md`). Durable design notes
+(ADRs, research math, deletion checklist) are under `docs/design/`.

@@ -46,6 +46,7 @@ Discovery is a next-generation PTA data analysis package built on JAX.
    :caption: Advanced Topics
 
    advanced/conditional_sampling
+   advanced/packed_clogl
    advanced/single_precision
 
 .. toctree::

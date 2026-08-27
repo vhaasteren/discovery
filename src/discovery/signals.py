@@ -16,6 +16,7 @@ from . import utils
 from . import _kernels as kernels
 from . import const
 from . import solar
+from .structured import diagonal_fourier_covariance
 
 # residuals
 
@@ -527,6 +528,21 @@ def makegp_fourier_allpsr(psrs, prior, components, T=None, fourierbasis=fourierb
     return gp
 
 
+def _orf_spectrum_covariance_block(phi, orfmat):
+    """Legacy pulsar-major block assembly of a global Fourier covariance."""
+    return jnp.block([
+        [jnp.make2d(jnp.dot(phi, val)) for val in row]
+        for row in orfmat
+    ])
+
+
+def _orf_spectrum_covariance(phi, orfmat):
+    """Ordinary Fourier covariance ``Gamma kron diag(phi)`` when applicable."""
+    if orfmat.ndim == 2 and phi.ndim == 1:
+        return jnp.kron(orfmat, jnp.diag(phi))
+    return _orf_spectrum_covariance_block(phi, orfmat)
+
+
 def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourierbasis, means=None, common=[], exclude=['f', 'df'],
                          name='fourierGlobalGP', meansname='meanFourierGlobalGP'):
     priors = priors if isinstance(priors, list) else [priors]
@@ -547,12 +563,14 @@ def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourier
     if len(priors) == 1 and len(orfs) == 1:
         prior, orfmat, argmap = priors[0], orfmats[0], argmaps[0]
 
-        def priorfunc(params):
-            phi = prior(f, df, *[params[arg] for arg in argmap])
+        def spectrumfunc(params):
+            return prior(f, df, *[params[arg] for arg in argmap])
+        spectrumfunc.params = list(argmap)
 
-            # the jnp.dot handles the "pixel basis" case where the elements of orfmat are n-vectors
-            # and phidiag is an (m x n)-matrix; here n is the number of pixels and m of Fourier components
-            return jnp.block([[jnp.make2d(jnp.dot(phi, val)) for val in row] for row in orfmat])
+        def priorfunc(params):
+            # kron for an ordinary 1-D Fourier spectrum; the block expression
+            # remains for the pixel-basis case where orf entries are n-vectors.
+            return _orf_spectrum_covariance(spectrumfunc(params), orfmat)
         priorfunc.params = argmap
         priorfunc.type = jax.Array
 
@@ -560,7 +578,7 @@ def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourier
         if orfmat.ndim == 2:
             invorf, orflogdet = utils.jnparray(np.linalg.inv(orfmat)), np.linalg.slogdet(orfmat)[1]
             def invprior(params):
-                phi = prior(f, df, *[params[arg] for arg in argmap])
+                phi = spectrumfunc(params)
                 invphi = 1.0 / phi if phi.ndim == 1 else jnp.linalg.inv(phi)
                 logdetphi = jnp.sum(jnp.log(phi)) if phi.ndim == 1 else jnp.linalg.slogdet(phi)[1]
 
@@ -575,7 +593,7 @@ def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourier
 
             orfcf = utils.jsp.linalg.cho_factor(orfmat)
             def factors(params):
-                phi = prior(f, df, *[params[arg] for arg in argmap])
+                phi = spectrumfunc(params)
                 phicf = utils.jsp.linalg.cho_factor(phi)
 
                 return orfcf, phicf
@@ -606,6 +624,19 @@ def makeglobalgp_fourier(psrs, priors, orfs, components, T, fourierbasis=fourier
     # introspection tags read by discovery.summary
     gp.gpname, gp.gpcommon = name, common
     gp.orfnames = [orf.__name__ for orf in orfs]
+
+    if (len(priors) == 1
+            and len(orfs) == 1
+            and orfmat.ndim == 2
+            and getattr(prior, "fourier_covariance", None) == "diagonal"):
+        try:
+            from .structured import SeparableFourierPrior
+            gp.separable_prior = SeparableFourierPrior.build(
+                orfmat, spectrumfunc, width=len(f),
+            )
+        except ValueError:
+            # Optional metadata only; an invertible non-SPD ORF stays dense.
+            gp.separable_prior = None
 
     if means is not None:
         margspec = inspect.getfullargspec(means)
@@ -1011,7 +1042,7 @@ def make_powerlaw(*, gamma=None, scale=1.0, low_clip=-18.0, high_clip=-9.0):
                          - _g * jnp.log10(f) + jnp.log10(df) + _LOG10_NORM + _s2)
             return utils.to_working(10.0 ** jnp.clip(log10_phi, low_clip, high_clip))
 
-    return powerlaw
+    return diagonal_fourier_covariance(powerlaw)
 
 
 powerlaw = make_powerlaw()
@@ -1152,7 +1183,7 @@ def make_powerlaw_pivot(*, f_pivot, parameterization=None, gamma=None,
                          - _g * jnp.log10(f) + jnp.log10(df) + _LOG10_NORM + _s2)
             return utils.to_working(10.0 ** jnp.clip(log10_phi, low_clip, high_clip))
 
-    return powerlaw
+    return diagonal_fourier_covariance(powerlaw)
 
 
 def make_brokenpowerlaw(*, gamma=None, scale=1.0, low_clip=-18.0, high_clip=-9.0):
@@ -1206,7 +1237,7 @@ def make_brokenpowerlaw(*, gamma=None, scale=1.0, low_clip=-18.0, high_clip=-9.0
                          + _kg * jnp.logaddexp(0.0, z) / _LN10 + _s2)
             return utils.to_working(10.0 ** jnp.clip(log10_phi, low_clip, high_clip))
 
-    return brokenpowerlaw
+    return diagonal_fourier_covariance(brokenpowerlaw)
 
 
 brokenpowerlaw = make_brokenpowerlaw()
@@ -1244,7 +1275,7 @@ def make_freespectrum(*, scale=1.0, low_clip=-18.0, high_clip=-9.0):
         log10_phi = 2.0 * log10_rho + _s2
         return utils.to_working(jnp.repeat(10.0 ** jnp.clip(log10_phi, low_clip, high_clip), 2))
 
-    return freespectrum
+    return diagonal_fourier_covariance(freespectrum)
 
 
 freespectrum = make_freespectrum()
@@ -1368,6 +1399,9 @@ def make_combined_crn(components, irn_psd, crn_psd, crn_prefix: typing.Optional[
     exec(func_code, ns)
     combined = ns['combined']
     combined.__annotations__ = annotations
+    if (getattr(irn_psd, "fourier_covariance", None) == "diagonal"
+            and getattr(crn_psd, "fourier_covariance", None) == "diagonal"):
+        combined = diagonal_fourier_covariance(combined)
 
     # Deduplicated list of CRN param names as they appear in the combined signature
     crn_params = list(dict.fromkeys(crn_rename[k] for k in crn_names))
@@ -1430,9 +1464,10 @@ def makepowerlaw_crn(components, crn_gamma='variable', *, scale=1.0, low_clip=-1
             return phi
 
     if crn_gamma not in ('variable', None):
-        return utils.partial(powerlaw_crn, crn_gamma=crn_gamma)
+        return diagonal_fourier_covariance(
+            utils.partial(powerlaw_crn, crn_gamma=crn_gamma))
     else:
-        return powerlaw_crn
+        return diagonal_fourier_covariance(powerlaw_crn)
 
 
 def make_powerlaw_brokencrn(*, scale=1.0, low_clip=-18.0, high_clip=-9.0):
@@ -1473,7 +1508,7 @@ def make_powerlaw_brokencrn(*, scale=1.0, low_clip=-18.0, high_clip=-9.0):
         return utils.to_working(10.0 ** jnp.clip(log10_irn, low_clip, high_clip)
                                 + 10.0 ** jnp.clip(log10_crn, low_clip, high_clip))
 
-    return powerlaw_brokencrn
+    return diagonal_fourier_covariance(powerlaw_brokencrn)
 
 
 powerlaw_brokencrn = make_powerlaw_brokencrn()
@@ -1520,7 +1555,7 @@ def make_brokenpowerlaw_brokencrn(*, scale=1.0, low_clip=-18.0, high_clip=-9.0):
         return utils.to_working(10.0 ** jnp.clip(log10_irn, low_clip, high_clip)
                                 + 10.0 ** jnp.clip(log10_crn, low_clip, high_clip))
 
-    return brokenpowerlaw_brokencrn
+    return diagonal_fourier_covariance(brokenpowerlaw_brokencrn)
 
 
 brokenpowerlaw_brokencrn = make_brokenpowerlaw_brokencrn()
@@ -1567,7 +1602,7 @@ def makefreespectrum_crn(components, *, scale=1.0, low_clip=-18.0, high_clip=-9.
             phi[:2*components] += np.repeat(10.0**(2.0 * crn_log10_rho), 2)
             return phi
 
-    return freespectrum_crn
+    return diagonal_fourier_covariance(freespectrum_crn)
 
 
 # ORFs: OK as numpy functions

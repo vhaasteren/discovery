@@ -19,6 +19,7 @@ import jax.scipy as jsp
 
 from . import signals
 from . import metamatrix as mm
+from .structured import separable_contrib
 from .utils import (
     Kernel,
     make_uind,
@@ -1446,6 +1447,28 @@ class VectorWoodburyKernel(Kernel):
         return mm.prune_graph(graph, output=('staged' if has_rp else 'logp'))
 
 
+def dense_coefficient_logprior_legacy(c, Phi):
+    """Two-factor dense Gaussian log-density (solve + slogdet). Test reference."""
+    flat = c.reshape(-1)
+    return (-0.5 * flat @ jnp.linalg.solve(Phi, flat)
+            - 0.5 * jnp.linalg.slogdet(Phi)[1])
+
+
+def dense_coefficient_logprior(c, Phi):
+    """One-factor dense Gaussian log-density (LU + log|diag|)."""
+    cf = jsp.linalg.lu_factor(Phi)
+    flat = c.reshape(-1)
+    solved = jsp.linalg.lu_solve(cf, flat)
+    logabsdet = jnp.sum(jnp.log(jnp.abs(jnp.diag(cf[0]))))
+    return -0.5 * (flat @ solved + logabsdet)
+
+
+def inverse_coefficient_logprior(c, inverse, logabsdet):
+    """Gaussian log-density from an analytic ``(Phi^{-1}, log|Phi|)`` pair."""
+    flat = c.reshape(-1)
+    return -0.5 * (flat @ inverse @ flat + logabsdet)
+
+
 class CompoundGP:
     def __new__(cls, x):
         if not isinstance(x, (list, tuple)):
@@ -1540,11 +1563,6 @@ class CompoundGP:
         def _slice_op(s, e):
             return lambda c: c[:, s:e]
 
-        def _dense_contrib(c_, Phi_):
-            cf = c_.reshape(-1)
-            return (-0.5 * cf @ jnp.linalg.solve(Phi_, cf)
-                    - 0.5 * jnp.linalg.slogdet(Phi_)[1])
-
         def _diag_contrib(c_, Phi_):
             return (-0.5 * jnp.sum(c_ * c_ / Phi_)
                     - 0.5 * jnp.sum(jnp.log(jnp.abs(Phi_))))
@@ -1552,15 +1570,49 @@ class CompoundGP:
         contribs = []
         for i, gp in enumerate(gplist):
             s, e = offsets[i], offsets[i + 1]
-            phi_n_leaf = b.leaf(gp.Phi.N, name=f'gp{i}_phiN')
             c_slice = b.node(_slice_op(s, e), [c_for_prior],
                              description=f'c_for_prior[:,{s}:{e}]')
-            if isinstance(gp.Phi, NoiseMatrix2D):
-                contrib = b.node(_dense_contrib, [c_slice, phi_n_leaf],
-                                 description=f'gp{i} dense logprior')
+            separable = getattr(gp, "separable_prior", None)
+            inv_fn = getattr(gp, "Phi_inv", None) or getattr(gp.Phi, "inv", None)
+            if separable is not None:
+                if widths[i] != separable.width:
+                    raise ValueError(
+                        f"GP {i} coefficient width {widths[i]} does not match "
+                        f"separable prior width {separable.width}"
+                    )
+                phi_leaf = b.leaf(
+                    separable.spectrum, name=f"gp{i}_separable_spectrum")
+                chol_leaf = b.leaf(
+                    separable.orf_cholesky, name=f"gp{i}_orf_cholesky")
+                logdet_leaf = b.leaf(
+                    separable.orf_logdet, name=f"gp{i}_orf_logdet")
+                contrib = b.node(
+                    separable_contrib,
+                    [c_slice, phi_leaf, chol_leaf, logdet_leaf],
+                    description=f"gp{i} separable Fourier logprior",
+                )
+            elif isinstance(gp.Phi, NoiseMatrix2D) and inv_fn is not None:
+                inverse_leaf = b.leaf(inv_fn, name=f"gp{i}_analytic_inverse")
+                inverse, logabsdet = inverse_leaf.split()
+                contrib = b.node(
+                    inverse_coefficient_logprior,
+                    [c_slice, inverse, logabsdet],
+                    description=f"gp{i} analytic-inverse logprior",
+                )
+            elif isinstance(gp.Phi, NoiseMatrix2D):
+                phi_n_leaf = b.leaf(gp.Phi.N, name=f"gp{i}_phiN")
+                contrib = b.node(
+                    dense_coefficient_logprior,
+                    [c_slice, phi_n_leaf],
+                    description=f"gp{i} one-factor dense logprior",
+                )
             else:
-                contrib = b.node(_diag_contrib, [c_slice, phi_n_leaf],
-                                 description=f'gp{i} diag logprior')
+                phi_n_leaf = b.leaf(gp.Phi.N, name=f"gp{i}_phiN")
+                contrib = b.node(
+                    _diag_contrib,
+                    [c_slice, phi_n_leaf],
+                    description=f"gp{i} diag logprior",
+                )
             contribs.append(contrib)
 
         logpr = contribs[0]

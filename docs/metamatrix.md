@@ -115,6 +115,15 @@ clogL = al.clogL
 value = clogL({**hyperparams, **coeff_params})
 ```
 
+For a decentered cross-form array, an opt-in packed path evaluates the
+same density from one hyperparameter vector `theta` and one coefficient
+array `xi`. See [Packed coefficient likelihood](advanced/packed_clogl.md).
+
+```python
+packed = al.make_packed_clogL()
+value, c = packed(theta, xi)
+```
+
 #### Choosing the algebra: `clogl_form`
 
 `ArrayLikelihood` accepts:

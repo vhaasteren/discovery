@@ -14,6 +14,53 @@ from .. import prior
 from ..pulsar import save_chain
 
 
+def makemodel_packed(array_likelihood, priordict={}, *,
+                     store_physical_coefficients=False):
+    """NumPyro model for a packed decentered ``clogL``.
+
+    Sites are a bounded Uniform ``theta`` vector and a standard-normal ``xi``
+    array. The Normal site is only a proper base measure: ``clogL`` already
+    contains the transformed joint, so the Normal quadratic is cancelled
+    with ``xi_base_correction``. See ``docs/advanced/packed_clogl.md``.
+    """
+    packed = array_likelihood.make_packed_clogL()
+
+    lows = []
+    highs = []
+    for name, start, stop, _shape in packed.theta_layout:
+        lo, hi = prior.getprior_uniform(name, priordict)
+        width = stop - start
+        lows.extend([lo] * width)
+        highs.extend([hi] * width)
+    low = jnp.asarray(lows)
+    high = jnp.asarray(highs)
+
+    def numpyro_model():
+        theta = numpyro.sample(
+            "theta",
+            dist.Uniform(low, high).to_event(1),
+        )
+        xi = numpyro.sample(
+            "xi",
+            dist.Normal(0.0, 1.0)
+                .expand(packed.xi_shape)
+                .to_event(2),
+        )
+
+        out = packed(theta, xi)
+        logp, coefficients = out
+
+        numpyro.factor("xi_base_correction", 0.5 * jnp.sum(xi * xi))
+        numpyro.factor("logp", logp)
+
+        if store_physical_coefficients:
+            numpyro.deterministic("coefficients", coefficients)
+
+    numpyro_model.to_df = lambda chain: packed.samples_to_df(chain)
+    numpyro_model.packed_clogL = packed
+    return numpyro_model
+
+
 def makemodel_transformed(mylogl, transform=prior.makelogtransform_uniform, priordict={}):
     logx = transform(mylogl, priordict=priordict)
 

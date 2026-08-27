@@ -15,6 +15,7 @@ Complete API documentation auto-generated from source code.
    solar
    deterministic
    likelihood
+   packed
    prior
    const
    recipes

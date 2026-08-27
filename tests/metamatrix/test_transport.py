@@ -1612,3 +1612,69 @@ def test_live_kernel_diagonal_type_dispatch(metamath_backend):
         _live_kernel_diagonal(proj, eta)
     with pytest.raises(TypeError, match="unsupported kernel type"):
         _live_kernel_diagonal(object(), eta)
+
+
+# ==========================================================================
+# Batched conditioner
+# ==========================================================================
+
+def test_batched_conditioner_equals_stacked(psrs, metamath_backend):
+    model = R.decenter_intrinsic_rn_global_hd(psrs)
+    transport = model._build_decenter_transport(model._coefficient_assembly[1])
+    stacked = tr._stacked_array_conditioner(transport.transports)
+    rng = np.random.default_rng(11)
+    for _ in range(20):
+        params = ds.sample_uniform(transport.params)
+        np.testing.assert_allclose(
+            transport._pinv(params), stacked(params), rtol=1e-12)
+
+
+def test_separable_curn_precision_equals_dense_diagonal(psrs, metamath_backend):
+    gp = _globalgp(psrs, components=5)
+    params = ds.sample_uniform(gp.Phi.getN.params)
+    batched = tr.globalgp_curn_array_conditioner(gp, len(psrs))(params)
+    dense = 1.0 / np.diag(np.asarray(gp.Phi.getN(params))).reshape((len(psrs), -1))
+    np.testing.assert_allclose(batched, dense, rtol=1e-12)
+
+
+def test_legacy_curn_reciprocal_matches_diagonal_first(psrs, metamath_backend):
+    gp = _globalgp(psrs, components=5)
+    params = ds.sample_uniform(gp.Phi.getN.params)
+    new = tr.globalgp_curn_block(gp, 1, len(psrs)).conditioner_precision(params)
+    old = tr._legacy_globalgp_curn_precision(gp.Phi.getN, 1, len(psrs))(params)
+    np.testing.assert_allclose(new, old, rtol=1e-12)
+    assert np.all(np.isfinite(new))
+
+
+def test_malformed_batched_conditioner_shape_raises(psrs, metamath_backend):
+    model = R.decenter_intrinsic_rn(psrs)
+    transport = model._build_decenter_transport(model._coefficient_assembly[1])
+
+    def bad(params):
+        return kh.jnp.ones((len(psrs), transport.dimension + 1))
+    bad.params = []
+
+    broken = tr.ArrayTransport(
+        transport.transports, conditioner_precision=bad)
+    with pytest.raises(ValueError, match="batched conditioner precision"):
+        broken._pinv(ds.sample_uniform(transport.params))
+
+
+def test_user_arraytransport_without_explicit_callable_still_works(
+        psrs, metamath_backend):
+    model = R.decenter_intrinsic_rn(psrs)
+    per_psr = model._build_decenter_transport(
+        model._coefficient_assembly[1]).transports
+    transport = tr.ArrayTransport(per_psr)
+    assert transport._conditioner_precision is not None
+    params = ds.sample_uniform(transport.params)
+    value = transport._pinv(params)
+    assert value.shape == (transport.npsr, transport.dimension)
+    transport.validate(params)
+
+
+def test_arraytransport_params_include_batched_conditioner(psrs, metamath_backend):
+    model = R.decenter_intrinsic_rn_global_hd(psrs)
+    transport = model._build_decenter_transport(model._coefficient_assembly[1])
+    for name in transport._conditioner_precision.params:
+        assert name in transport.params
