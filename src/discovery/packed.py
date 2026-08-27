@@ -194,9 +194,9 @@ class PackedClogL:
 
     Same log-density as ``model.clogL``, with two JIT inputs: a flat
     hyperparameter vector ``theta`` and a rectangular coefficient array
-    ``xi`` of shape ``(npsr, k)``. ``__call__`` unpacks and calls
-    ``model.clogL``. ``oracle`` is the same path, kept as an explicit
-    parity entry point.
+    ``xi`` of shape ``(npsr, k)``. ``__call__`` runs the fused kernel
+    (frozen grams, no graph walk). ``oracle`` unpacks and calls
+    ``model.clogL`` for parity.
 
     Raises ``PackedClogLUnsupported`` when the model is ineligible.
     User guide: ``docs/advanced/packed_clogl.md``.
@@ -226,7 +226,10 @@ class PackedClogL:
         self.theta_layout, self.theta_size = make_layout(
             theta_names, template=template_params
         )
-        self.kernel = self.oracle
+        from .fast_clogl import build_fused_clogl
+        self.kernel = build_fused_clogl(
+            model, self.transport, self.theta_layout, self.coefficients
+        )
 
     @property
     def named(self):
@@ -279,10 +282,7 @@ class PackedClogL:
         return theta, self.coefficients.pack(params)
 
     def __call__(self, theta, xi):
-        """Evaluate the packed named-graph ``clogL``.
-
-        Returns ``(logp, physical_coefficients)``.
-        """
+        """Evaluate the fused kernel. Returns ``(logp, physical_coefficients)``."""
         return self.kernel(theta, xi)
 
     def oracle(self, theta, xi):

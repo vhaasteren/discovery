@@ -1,4 +1,4 @@
-"""Packed clogL layout, eligibility, and named-graph packing."""
+"""Packed clogL layout, eligibility, and fused-kernel parity."""
 
 import numpy as np
 import pytest
@@ -204,6 +204,24 @@ def test_jit_pytree_has_two_leaves(psrs, metamath_backend):
     compiled = jax.jit(lambda t, x: packed(t, x)[0])
     assert np.isfinite(float(compiled(theta, xi)))
     assert len(jax.tree_util.tree_leaves((theta, xi))) == 2
+
+
+def test_fused_jaxpr_has_no_dense_global_covariance(psrs, metamath_backend):
+    model = R.decenter_intrinsic_rn_global_hd(psrs)
+    packed = model.make_packed_clogL()
+    p0 = _fill_params(model)
+    theta, xi = packed.pack(p0)
+    closed = jax.make_jaxpr(lambda t, x: packed(t, x)[0])(theta, xi)
+    npsr, k_gw = len(psrs), model.globalgp.separable_prior.width
+    forbidden = (npsr * k_gw, npsr * k_gw)
+    shapes = []
+    for eqn in closed.jaxpr.eqns:
+        for out in eqn.outvars:
+            aval = getattr(out, "aval", None)
+            shape = getattr(aval, "shape", None)
+            if shape:
+                shapes.append(tuple(shape))
+    assert forbidden not in shapes
 
 
 def test_named_and_packed_independently_callable(psrs, metamath_backend):
