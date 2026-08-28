@@ -75,6 +75,16 @@ def _constant_basis(F):
     return np.asarray(_eval_basis(F), dtype=np.float64)
 
 
+def _bake(a):
+    """Construction-time products are baked in float64 (see
+    ``transport.bake_dtype``), independent of ``utils.working_dtype()``: a
+    float32 solve through the timing-model Woodbury leaves ``F^T N^-1 F``
+    indefinite and the frozen scalars ``y^T N^-1 y`` / ``log det N`` carry
+    O(1e7) magnitudes that float32 cannot resolve to better than ~1."""
+    from .transport import bake_dtype
+    return kh.jnp.asarray(a, dtype=bake_dtype())
+
+
 def _materialize_cross_terms(model, vsm, ys):
     FtNmF = []
     NmFty = []
@@ -85,7 +95,8 @@ def _materialize_cross_terms(model, vsm, ys):
     for N, F, y in zip(vsm.Ns, vsm.Fs, ys):
         F = _constant_basis(F)
         y = np.asarray(y, dtype=np.float64)
-        solve = mm.func(N.make_solve)
+        from .transport import bake_dtype
+        solve = mm.func(N.make_solve, working=bake_dtype())
         Nmy, logdet_N = solve(y, params={})
         NmF, _ = solve(F, params={})
         solved.append((solve, NmF))
@@ -110,16 +121,16 @@ def _materialize_cross_terms(model, vsm, ys):
             FcwtNmFcw.append(Fcw.T @ np.asarray(NmFcw))
         ext_grams.append((
             extsignal.coeffs,
-            kh.jnparray(FcwNmy),
-            kh.jnparray(FtNmFcw),
-            kh.jnparray(FcwtNmFcw),
+            _bake(FcwNmy),
+            _bake(FtNmFcw),
+            _bake(FcwtNmFcw),
         ))
 
     return (
-        kh.jnparray(FtNmF),
-        kh.jnparray(NmFty),
-        kh.jnp.sum(kh.jnparray(ytNmy)),
-        kh.jnp.sum(kh.jnparray(ldN)),
+        _bake(FtNmF),
+        _bake(NmFty),
+        kh.jnp.sum(_bake(ytNmy)),
+        kh.jnp.sum(_bake(ldN)),
         tuple(ext_grams),
     )
 
@@ -152,7 +163,7 @@ def _fused_eval(params, xi, const):
     )
 
     rn = c[:, const.block_slices.rn]
-    phi_rn = const.rn_spectrum(params)
+    phi_rn = _bake(const.rn_spectrum(params))
     logp = logp + (
         -0.5 * kh.jnp.sum(rn * rn / phi_rn)
         - 0.5 * kh.jnp.sum(kh.jnp.log(kh.jnp.abs(phi_rn)))
@@ -160,7 +171,7 @@ def _fused_eval(params, xi, const):
 
     if const.global_prior is not None:
         gw = c[:, const.block_slices.gw]
-        phi = const.global_prior.spectrum(params)
+        phi = _bake(const.global_prior.spectrum(params))
         logp = logp + separable_contrib(
             gw,
             phi,
