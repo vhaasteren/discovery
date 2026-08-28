@@ -34,6 +34,26 @@ from . import utils as kh
 from . import _kernels
 
 
+def bake_dtype():
+    """Float dtype for construction-time products (G0, b0, E0, conditioner
+    precisions): float64 whenever x64 is enabled, independent of
+    `utils.working_dtype()`. A float32 *sampling* configuration must never
+    degrade a baked constant: `W^T N0^-1 W` through the timing-model Woodbury
+    loses ~1e-5 relative accuracy in float32 (far worse under TF32 GPU matmul),
+    which makes G0 indefinite and the transport factorization NaN once the
+    prior precision drops below |lambda_min(G0)|."""
+    return kh.jnp.float64 if kh.jax.config.x64_enabled else kh.jnp.float32
+
+
+def _as_bake(a):
+    return kh.jnp.asarray(a, dtype=bake_dtype())
+
+
+# Relative tolerance on lambda_min(G0) / lambda_max(G0). A float64 bake of a
+# rank-deficient Gram sits at ~1e-14; a float32 bake at ~1e-5.
+_G0_PSD_RTOL = 1e-9
+
+
 @dataclass(frozen=True)
 class TransportBlock:
     """One basis block of a transport. Construct via the adapters below."""
@@ -136,12 +156,15 @@ def gp_block(gp, psr_slot=None):
     F = _validate_columns(getattr(gp, 'gpname', 'gp'), F)
     getN = gp.Phi.getN
 
+    # Reciprocals are taken in the bake dtype: the GP spectrum is emitted in
+    # the working dtype, and a float32 reciprocal of a (1 ns)^2-scale variance
+    # is quantized and has an overflowing second derivative (phi**-3).
     if psr_slot is None:
         def conditioner_precision(params):
-            return kh.jnp.asarray(getN(params)) ** -1
+            return _as_bake(getN(params)) ** -1
     else:
         def conditioner_precision(params, _i=psr_slot):
-            return kh.jnp.asarray(getN(params))[_i] ** -1
+            return _as_bake(getN(params))[_i] ** -1
     conditioner_precision.params = list(getattr(getN, 'params', []))
 
     name = getattr(gp, 'gpname', 'gp')
@@ -162,7 +185,7 @@ def _conditioner_precision_from_spec(spec, k, name):
         params = list(getattr(spec, 'params', []))
 
         def cp(params_in, _f=spec):
-            return kh.jnp.asarray(_f(params_in))
+            return _as_bake(_f(params_in))
         cp.params = params
         return cp
 
@@ -236,7 +259,7 @@ def globalgp_curn_block(globalgp, psr_slot, npsr):
     getN = globalgp.Phi.getN
 
     def conditioner_precision(params, _i=psr_slot, _n=npsr):
-        diagonal = kh.jnp.diag(getN(params))
+        diagonal = _as_bake(kh.jnp.diag(getN(params)))
         return (diagonal ** -1).reshape((_n, -1))[_i]
     conditioner_precision.params = list(getattr(getN, 'params', []))
 
@@ -396,7 +419,7 @@ def reference_noise_frozen(kernel, params0, description=None):
             f"make_solve as a graph, got {type(kernel).__name__}. "
             f"(Legacy matrix.py kernels are not supported; build the model "
             f"under discovery.config(kernels='metamath').)")
-    f = metamatrix.func(make_solve)
+    f = metamatrix.func(make_solve, working=bake_dtype())
     missing = [p for p in f.params if p not in params0]
     if missing:
         raise ValueError(f"reference_noise_frozen: params0 is missing "
@@ -416,6 +439,25 @@ def reference_noise_frozen(kernel, params0, description=None):
 # --------------------------------------------------------------------------
 
 _KINDS = ("exact_diagonal", "curn_inverse_marginal")
+
+
+def _require_psd_gram(G0, description):
+    """G0 = W^T N0^-1 W is a Gram matrix and must be PSD up to bake roundoff.
+
+    A materially negative eigenvalue means the reference-noise solve was not
+    accurate enough (e.g. a float32 solve through the timing-model Woodbury):
+    A = G0 + diag(p) then goes indefinite as soon as any p_i < |lambda_min|,
+    i.e. for perfectly legal hyperparameters, and NUTS sees NaN log-densities
+    instead of an error. Diagnose it here, at construction."""
+    lam = np.linalg.eigvalsh(G0)
+    scale = max(float(np.max(np.abs(lam))), np.finfo(np.float64).tiny)
+    if lam[0] < -_G0_PSD_RTOL * scale:
+        raise ValueError(
+            f"transport: baked Gram W^T N0^-1 W is indefinite "
+            f"(lambda_min={lam[0]:.3e}, lambda_max={lam[-1]:.3e}, ratio "
+            f"{lam[0] / scale:.1e} < -{_G0_PSD_RTOL:.0e}); the reference-noise "
+            f"solve ({description}) is not accurate enough to bake from. "
+            f"Bake in float64 (see transport.bake_dtype()).")
 
 
 class Transport:
@@ -472,13 +514,18 @@ class Transport:
         self.dimension = offset
 
         # -- bake (construction-time boundary work) ---------------------------
-        W = np.concatenate([np.asarray(b.F) for b in self.blocks], axis=1)
-        self._W = kh.jnparray(W)             # retained for diagnostics/inverse
+        W = np.concatenate([np.asarray(b.F, dtype=np.float64)
+                            for b in self.blocks], axis=1)
+        self._W = _as_bake(W)                # retained for diagnostics/inverse
         N0mW, _ = reference_noise.solve(self._W)
-        if not bool(np.all(np.isfinite(np.asarray(N0mW)))):
+        N0mW = np.asarray(N0mW, dtype=np.float64)
+        if not bool(np.all(np.isfinite(N0mW))):
             raise ValueError(f"reference-noise solve produced non-finite "
                              f"values ({reference_noise.description})")
-        self._G0 = kh.jnparray(W.T @ np.asarray(N0mW))
+        G0 = W.T @ N0mW
+        G0 = 0.5 * (G0 + G0.T)
+        _require_psd_gram(G0, reference_noise.description)
+        self._G0 = _as_bake(G0)
         self.reference_description = reference_noise.description
         # Retain the frozen reference-noise operator so the geometry certifier
         # can form N0^-1 quadratics and diag(N0) without reconstructing white/
@@ -493,7 +540,7 @@ class Transport:
             if r0.shape != (self._ntoa,):
                 raise ValueError(f"reference_residual has shape {r0.shape}; "
                                  f"expected ({self._ntoa},)")
-            self._b0 = kh.jnparray(np.asarray(N0mW).T @ r0)
+            self._b0 = _as_bake(N0mW.T @ r0)
 
         # -- ExtSignal-subtracted centering ----------------------------------
         # Bake E0_e = W^T N0^-1 Fext_i once; per eval subtract E0_e @ coeffs_e[i]
@@ -536,7 +583,7 @@ class Transport:
                     raise ValueError(
                         f"center_extsignals '{esname}': Fs[{slot}] has "
                         f"{Fext.shape[0]} rows; expected n_toa={self._ntoa}")
-                E0 = kh.jnparray(N0mW_np.T @ Fext)          # (k, k_ext)
+                E0 = _as_bake(N0mW_np.T @ Fext)             # (k, k_ext)
                 self._extsignals.append((E0, coeffs, slot, esname))
                 ext_params += list(getattr(coeffs, 'params', []))
 
@@ -812,7 +859,7 @@ def gp_array_conditioner(gp):
     getN = gp.Phi.getN
 
     def precision(params):
-        return kh.jnp.asarray(getN(params)) ** -1
+        return _as_bake(getN(params)) ** -1
 
     precision.params = list(getN.params)
     return precision
@@ -830,7 +877,7 @@ def globalgp_curn_array_conditioner(globalgp, npsr):
     getN = globalgp.Phi.getN
 
     def precision(params):
-        covariance = kh.jnp.asarray(getN(params))
+        covariance = _as_bake(getN(params))
         return 1.0 / kh.jnp.diag(covariance).reshape((npsr, -1))
 
     precision.params = list(getN.params)

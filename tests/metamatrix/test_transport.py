@@ -1678,3 +1678,85 @@ def test_arraytransport_params_include_batched_conditioner(psrs, metamath_backen
     transport = model._build_decenter_transport(model._coefficient_assembly[1])
     for name in transport._conditioner_precision.params:
         assert name in transport.params
+
+
+# ==========================================================================
+# Bake precision is independent of the sampling (working) dtype
+# ==========================================================================
+
+def _with_float32_working(build):
+    ds.utils.config(backend="jax", factor="cholesky", working=jax.numpy.float32)
+    try:
+        return build()
+    finally:
+        ds.utils.config(backend="jax", factor="cholesky")
+
+
+def test_func_working_override_beats_the_float32_config(psrs, cholesky_backend):
+    """`metamatrix.func(..., working=float64)` materializes in float64 even
+    under `config(working=float32)`; without the override the config wins."""
+    model = R.decenter_intrinsic_rn(psrs)
+    N = model.psls[0].N
+    rhs = np.asarray(model._coefficient_assembly[1][0], dtype=np.float64)
+
+    def build():
+        return (metamatrix.func(N.make_solve)(rhs, params={})[0],
+                metamatrix.func(N.make_solve,
+                                working=jax.numpy.float64)(rhs, params={})[0])
+    default, forced = _with_float32_working(build)
+    assert default.dtype == jax.numpy.float32
+    assert forced.dtype == jax.numpy.float64
+
+
+def test_bake_is_float64_under_float32_working(psrs, cholesky_backend):
+    """G0/b0 and the conditioner precision are baked in float64 regardless of
+    the working dtype, and the float32-config bake matches the float64 one.
+
+    Before this guarantee a float32 solve through the timing-model Woodbury
+    left G0 indefinite (lambda_min ~ -1e-5 lambda_max), so G0 + diag(p) went
+    indefinite for legal hyperparameters and NUTS saw NaN log-densities."""
+    m64 = R.decenter_intrinsic_rn_global_hd(psrs)
+    t64 = m64._build_decenter_transport(m64._coefficient_assembly[1])
+
+    def build():
+        m32 = R.decenter_intrinsic_rn_global_hd(psrs)
+        return m32._build_decenter_transport(m32._coefficient_assembly[1])
+    t32 = _with_float32_working(build)
+
+    assert t32._G0.dtype == jax.numpy.float64
+    assert t32._b0.dtype == jax.numpy.float64
+    G64, G32 = np.asarray(t64._G0), np.asarray(t32._G0)
+    scale = np.max(np.abs(G64))
+    assert np.max(np.abs(G32 - G64)) <= 1e-10 * scale
+    for G in G32:
+        lam = np.linalg.eigvalsh(G)
+        assert lam[0] >= -tr._G0_PSD_RTOL * lam[-1]
+
+    # conditioner precision: float64 and twice differentiable at the clipped
+    # low-amplitude edge (phi = 1e-18 s^2, where a float32 phi**-3 overflows)
+    hyper = ds.sample_uniform(t32.params)
+    name = next(p for p in t32.params if p.endswith("log10_A"))
+
+    def precision_sum(x):
+        return jax.numpy.sum(t32._pinv({**hyper, name: x}))
+    pinv = t32._pinv(hyper)
+    assert pinv.dtype == jax.numpy.float64
+    for x in (-20.0, -14.0):
+        h = jax.hessian(precision_sum)(jax.numpy.asarray(x))
+        assert np.isfinite(float(h))
+
+
+def test_indefinite_reference_gram_raises_at_construction(psrs, metamath_backend):
+    """A reference-noise solve too inaccurate to bake from is diagnosed at
+    construction instead of surfacing as NaN factorizations at runtime."""
+    model = R.decenter_intrinsic_rn(psrs)
+    block = tr.gp_block(model.commongp, psr_slot=0)
+
+    class Flipped:
+        description = "sign-flipped solve"
+
+        def solve(self, rhs):
+            return -np.asarray(rhs), 0.0
+
+    with pytest.raises(ValueError, match="indefinite"):
+        tr.Transport([block], reference_noise=Flipped(), center=False)

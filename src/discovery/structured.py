@@ -74,5 +74,12 @@ class SeparableFourierPrior:
         return list(self.spectrum.params)
 
     def marginal_precision(self, params):
-        phi = kh.jnp.asarray(self.spectrum(params))
-        return 1.0 / (self.orf_diagonal[:, None] * phi[None, :])
+        # Invert in the bake dtype (float64 when x64 is on): the spectrum is
+        # emitted in the working dtype, and a float32 reciprocal of a
+        # (1 ns)^2-scale variance is quantized and its second derivative
+        # overflows (phi**-3 > float32 max), which makes hyperparameter
+        # Hessians NaN.
+        dtype = kh.jnp.float64 if kh.jax.config.x64_enabled else None
+        phi = kh.jnp.asarray(self.spectrum(params), dtype=dtype)
+        orf = kh.jnp.asarray(self.orf_diagonal, dtype=dtype)
+        return 1.0 / (orf[:, None] * phi[None, :])
