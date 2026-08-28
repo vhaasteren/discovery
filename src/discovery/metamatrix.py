@@ -299,8 +299,17 @@ def fold_constants(graph, args=[]):
 
     return new_graph
 
-def build_callable_from_graph(graph: Graph):
+def build_callable_from_graph(graph: Graph, working=None):
+    """Materialize `graph` as a callable.
+
+    `working` selects the float dtype of every non-pinned node (see
+    `_dtype_map`); default `utils.working_dtype()`. Boundary modules that bake
+    CONSTANTS once at construction time (e.g. `transport`) pass
+    `working=jnp.float64` so that a float32 sampling configuration never
+    degrades a baked product such as `W^T N0^-1 W`.
+    """
     output_name = next(reversed(graph.keys()))
+    working = utils.working_dtype() if working is None else working
 
     arg_leaves: List[str] = []
     const_values: Dict[str, Array] = {}
@@ -316,7 +325,7 @@ def build_callable_from_graph(graph: Graph):
         elif isinstance(node, FuncLeaf):
             func_leaves[name] = node.fn
         elif isinstance(node, GraphLeaf):
-            graph_leaves[name] = build_callable_from_graph(node.graph)
+            graph_leaves[name] = build_callable_from_graph(node.graph, working=working)
         elif isinstance(node, Node):
             nodes[name] = node
         else:
@@ -325,7 +334,7 @@ def build_callable_from_graph(graph: Graph):
     # Decide each node's float dtype once at materialization (func() is called
     # once, at the likelihood boundary). float64 default / no pins -> every node
     # is float64, so the per-edge cast below is the identity.
-    dtype_map = _dtype_map(graph, utils.working_dtype())
+    dtype_map = _dtype_map(graph, working)
 
     def f(*args, params={}) -> Array:
         env: Dict[str, Array] = {}
@@ -602,16 +611,20 @@ def sample_graph(graph: Graph, *args, display=False) -> Graph:
 
 
 def func(graph: Graph,
-         output: str = None) -> Callable[[Any], Array]:
+         output: str = None,
+         working=None) -> Callable[[Any], Array]:
     """
     Given a computational graph, produce a JAX-jittable function
     that computes the graph output. This first folds constant subgraphs,
     then prunes the graph, then builds the callable.
+
+    `working` overrides the float dtype of the materialized nodes (default:
+    `utils.working_dtype()`); see `build_callable_from_graph`.
     """
     if output is not None:
         graph = prune_graph(graph, output)
 
-    return build_callable_from_graph(fold_constants(graph))
+    return build_callable_from_graph(fold_constants(graph), working=working)
 
 
 # ===== Matrix operations =====

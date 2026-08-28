@@ -300,6 +300,18 @@ offers opt-in mitigations that leave the default `float64` path unchanged:
 3. **Timing-model projection** — `makegp_timing(..., project=True)` uses an exact
    flat-prior projection instead of a huge-variance improper prior (float32-safe).
 
+4. **Baked constants stay float64** — the transport (`decenter=True` /
+   `transport=`) bakes $G_0 = W^T N_0^{-1} W$, $b_0$ and any ExtSignal $E_0$
+   once at construction, and takes conditioner precisions $\phi^{-1}$, in
+   float64 whenever x64 is on (`transport.bake_dtype()`), independent of
+   `config(working=float32)`. A float32 solve through the timing-model
+   Woodbury leaves $G_0$ indefinite at the $10^{-5}$ level (worse under TF32
+   GPU matmul), so $G_0 + \mathrm{diag}(\phi^{-1})$ goes indefinite for legal
+   hyperparameters and NUTS sees NaN log-densities; a float32 $\phi^{-1}$ is
+   also quantized and has an overflowing second derivative. Construction now
+   raises if the baked Gram is materially indefinite. Boundary code can request
+   the same via `metamatrix.func(graph, working=jnp.float64)`.
+
 Details and numbers: [Single-precision tutorial](advanced/single_precision).
 Design notes (ADRs, research math): [docs/design/single_precision/](design/single_precision/README).
 Limitations worth knowing:
