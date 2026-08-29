@@ -312,6 +312,10 @@ offers opt-in mitigations that leave the default `float64` path unchanged:
    raises if the baked Gram is materially indefinite. Boundary code can request
    the same via `metamatrix.func(graph, working=jnp.float64)`.
 
+5. **Fully-fp32 GWB likelihood** — `discovery.fp32gwb` marginalizes red noise per
+   pulsar and decenters only the GWB coefficients with a Cholesky-only, float32-safe
+   kernel (see [fp32_gwb](advanced/fp32_gwb)).
+
 Details and numbers: [Single-precision tutorial](advanced/single_precision).
 Design notes (ADRs, research math): [docs/design/single_precision/](design/single_precision/README).
 Limitations worth knowing:
