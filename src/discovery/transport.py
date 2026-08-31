@@ -408,9 +408,10 @@ def reference_noise(psr):
 def reference_noise_frozen(kernel, params0, description=None):
     """Freeze ANY metamath kernel's solve at explicit reference parameters
     params0 (e.g. a noisedict): works for measurement noise incl.
-    Sherman-Morrison ECORR. This is the ONLY sanctioned way to use a
-    parameterized kernel in a transport -- never call a live kernel with
-    params={}."""
+    Sherman-Morrison ECORR. This is the sanctioned way to FREEZE a
+    parameterized kernel in a transport (never call a live kernel with
+    params={}); `class_tracking` is the sanctioned way to let its white-noise
+    parameters vary."""
     params0 = dict(params0)  # freeze a snapshot; caller mutation cannot alter N0
     make_solve = getattr(kernel, 'make_solve', None)
     if make_solve is None or not isinstance(make_solve, dict):
@@ -432,6 +433,103 @@ def reference_noise_frozen(kernel, params0, description=None):
     return _FrozenSolve(lambda rhs: f(rhs, params=params0),
                         description or f"frozen kernel at {sorted(params0)}",
                         diagonal=diagonal)
+
+
+class _ClassTracking(_FrozenSolve):
+    """Reference-noise operator that ALSO bakes a class-quantized tracker.
+
+    `.solve` / `.diagonal()` / `.description` are the frozen kernel at params0,
+    so every construction-time bake (G0, b0, E0, certifier probes) is exactly
+    what `reference_noise_frozen` gives. `.bake(W, r0)` returns the
+    `classgram.ClassGram` the transport evaluates per step instead of (G0, b0).
+    """
+    def __init__(self, kernel, params0, struct, layout, solve_fn, description,
+                 diagonal, validate, sigma_bin_dex, dense_threshold):
+        super().__init__(solve_fn, description, diagonal=diagonal)
+        self._kernel, self._params0 = kernel, dict(params0)
+        self._struct, self._layout = struct, layout
+        self._validate = bool(validate)
+        self.params = list(struct.params)
+        self.sigma_bin_dex = float(sigma_bin_dex)
+        self.dense_threshold = int(dense_threshold)
+        import hashlib
+        import json
+        self.params0_digest = "sha256:" + hashlib.sha256(json.dumps(
+            {k: float(v) for k, v in sorted(self._params0.items()) if k in self.params},
+            sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+    @property
+    def layout(self):
+        return self._layout
+
+    @property
+    def params0(self):
+        return dict(self._params0)
+
+    def bake(self, W, r0):
+        from . import classgram
+        cg = classgram.ClassGram(W, r0, self._struct, self._params0, self._layout)
+        if self._validate:
+            f = metamatrix.func(self._kernel.make_solve, working=bake_dtype())
+            classgram.validate_class_gram(
+                cg, W, r0, lambda rhs, p: f(rhs, params=p), self._params0)
+        return cg
+
+
+def class_tracking(kernel, params0, *, toaerrs, sigma_bin_dex=0.2,
+                   dense_threshold=16, validate=True, description=None):
+    """Reference noise that tracks white-noise parameters in the transport.
+
+    The transport's Gram becomes the exact Gram of a class-quantized
+    white-noise model baked at ``params0``: per backend, TOAs are binned in
+    ``log10 toaerr^2`` with width ``sigma_bin_dex``; bins holding at least
+    ``dense_threshold`` TOAs share one precision ratio (a baked k x k class),
+    every other TOA is kept exactly; ECORR is exact per epoch. Exact at
+    ``params0`` and for every EFAC move, positive definite for every value of
+    the white-noise parameters; the only approximation is the shared ratio
+    inside a baked class.
+
+    ``kernel``  : the canonical WHITE-noise kernel (NoiseMatrix1D / NoiseMatrixSM),
+                  i.e. ``PulsarLikelihood.white_noise_kernel`` (ECORR-as-GP already
+                  folded in).
+    ``params0`` : pins every parameter of that kernel; the bake point. Use the
+                  empirical-Bayes / MPE dictionary, never toaerrs (the chart is
+                  exact at params0 and degrades smoothly away from it).
+    ``toaerrs`` : the pulsar's TOA uncertainties (seconds); defines the sigma bins.
+    ``sigma_bin_dex``, ``dense_threshold``: bin width and minimum bin population
+                  for a baked class (measured defaults 0.2 dex, 16; raising the
+                  threshold improves geometry at a flop cost).
+    """
+    from . import classgram
+    params0 = dict(params0)
+    make_solve = getattr(kernel, "make_solve", None)
+    if make_solve is None or not isinstance(make_solve, dict):
+        raise TypeError(
+            f"class_tracking: expected a metamath kernel exposing make_solve as a "
+            f"graph; got {type(kernel).__name__}. (Legacy matrix.py kernels are "
+            f"not supported; build the model under "
+            f"discovery.config(kernels='metamath').)")
+    f = metamatrix.func(make_solve, working=bake_dtype())
+    missing = [p for p in f.params if p not in params0]
+    if missing:
+        raise ValueError(f"class_tracking: params0 is missing {missing}; the bake "
+                         f"point must pin every white-noise parameter of the kernel")
+    struct = classgram.measurement_structure(kernel, params0)
+    layout = classgram.build_layout(struct, params0, toaerrs,
+                                    sigma_bin_dex=sigma_bin_dex,
+                                    dense_threshold=dense_threshold)
+    try:
+        diagonal = _frozen_kernel_diagonal(kernel, params0)
+    except NotImplementedError:
+        diagonal = None
+    desc = description or (
+        f"class-tracked white noise at {sorted(params0)} "
+        f"(bin {sigma_bin_dex} dex, threshold {dense_threshold}: "
+        f"{layout.n_class} classes, {layout.n_dense} dense rows, "
+        f"{struct.n_epoch} epochs)")
+    return _ClassTracking(kernel, params0, struct, layout,
+                          lambda rhs: f(rhs, params=params0), desc, diagonal,
+                          validate, sigma_bin_dex, dense_threshold)
 
 
 # --------------------------------------------------------------------------
@@ -542,6 +640,17 @@ class Transport:
                                  f"expected ({self._ntoa},)")
             self._b0 = _as_bake(N0mW.T @ r0)
 
+        # -- optional white-noise tracking (class-quantized Gram) -----------
+        # G0/b0 above stay frozen at params0 (certifier probes, diagnostics);
+        # with tracking, the per-evaluation factor uses the tracked (G, b).
+        self._tracking = None
+        if isinstance(reference_noise, _ClassTracking):
+            r_bake = (np.asarray(reference_residual, dtype=np.float64) if center
+                      else np.zeros(self._ntoa))
+            self._tracking = reference_noise.bake(W, r_bake)
+            self._track_arrays = tuple(None if x is None else _as_bake(x)
+                                       for x in self._tracking.arrays())
+
         # -- ExtSignal-subtracted centering ----------------------------------
         # Bake E0_e = W^T N0^-1 Fext_i once; per eval subtract E0_e @ coeffs_e[i]
         # from b0 before the centering solve. A translation only; ldJ unchanged.
@@ -608,23 +717,31 @@ class Transport:
         self.center = center
         self.params = sorted(set(
             sum([list(b.conditioner_precision.params) for b in self.blocks], [])
-            + ext_params))
+            + ext_params
+            + (list(self._tracking.params) if self._tracking is not None else [])))
 
     # -- per-evaluation map (plain JAX; composes as a reparam FuncLeaf) ------
+    def _gram(self, params):
+        """(G, b) for this evaluation: frozen (G0, b0) or class-tracked."""
+        if self._tracking is None:
+            return self._G0, self._b0
+        G, b = self._tracking.gram(params, kh.jnp, arrays=self._track_arrays)
+        return G, (b if self._b0 is not None else None)
+
     def _factor(self, params):
         pinv = kh.jnp.concatenate(
             [b.conditioner_precision(params) for b in self.blocks])
+        G, b = self._gram(params)
         i1, i2 = kh.jnp.diag_indices(self.dimension)
-        return (kh.jsp.linalg.cho_factor(
-                    self._G0.at[i1, i2].add(pinv), lower=True),
-                pinv)
+        return (kh.jsp.linalg.cho_factor(G.at[i1, i2].add(pinv), lower=True),
+                pinv, b)
 
     def apply(self, params, xi):
-        cf, _ = self._factor(params)
+        cf, _, b = self._factor(params)
         q = kh.jsp.linalg.solve_triangular(cf[0], xi, trans=1, lower=cf[1])
         ldJ = -kh.jnp.sum(kh.jnp.log(kh.jnp.diag(cf[0])))
-        if self._b0 is not None:
-            rhs = self._b0
+        if b is not None:
+            rhs = b
             for E0, coeffs, slot, _name in self._extsignals:
                 rhs = rhs - E0 @ kh.jnp.asarray(coeffs(params))[slot]
             mu = kh.jsp.linalg.cho_solve(cf, rhs)
@@ -692,7 +809,7 @@ class Transport:
                     f"{bad.tolist()} (block-local). No floor is applied; "
                     f"fix the prior or remove the block.")
             offset += kb
-        cf, _ = self._factor(params)
+        cf, _, _b = self._factor(params)
         diag = np.asarray(kh.jnp.diag(cf[0]))
         if not np.all(np.isfinite(diag)) or np.any(diag <= 0.0):
             raise ValueError(
@@ -727,12 +844,27 @@ class Transport:
             out["center_extsignals"] = [name for *_, name in self._extsignals]
         if self._softclip:
             out["softclip"] = {name: zmax for name, _sli, zmax in self._softclip}
+        if self._tracking is not None:
+            lay = self._tracking.layout
+            ref = self._reference_noise
+            out["tracking"] = {
+                "kind": "class_quantized_white_noise",
+                "params": list(self._tracking.params),
+                "n_classes": int(lay.n_class),
+                "n_dense": int(lay.n_dense),
+                "n_epoch": int(self._tracking.n_epoch),
+                "sigma_bin_dex": float(ref.sigma_bin_dex),
+                "dense_threshold": int(ref.dense_threshold),
+                # bake-point VALUES, not just keys: a chart baked at a different
+                # dictionary is a different chart and must not reconcile
+                "params0_digest": ref.params0_digest,
+            }
         if params is None:
             if noise_solve is not None:
                 raise ValueError("diagnostics(noise_solve=...) requires params")
             return out
 
-        cf, pinv = self._factor(params)
+        cf, pinv, _b = self._factor(params)
         p = np.asarray(pinv)
         d = np.asarray(kh.jnp.diag(cf[0]))
         out.update(
@@ -948,6 +1080,43 @@ class ArrayTransport:
         self._b0 = (kh.jnparray([t._b0 for t in self.transports])
                     if self.center else None)
 
+        # -- optional white-noise tracking: zero-padded per-pulsar stacks ----
+        tracks = [t._tracking for t in self.transports]
+        if any(tr is not None for tr in tracks):
+            if not all(tr is not None for tr in tracks):
+                raise ValueError(
+                    "ArrayTransport requires all-or-none white-noise tracking "
+                    "(every per-pulsar Transport built with class_tracking, or none)")
+            self._tracking = tracks
+            k = self.dimension
+            M = max(max(tr.A.shape[0] for tr in tracks), 1)
+            D = max(max(tr.n_dense for tr in tracks), 1)
+            E = max(max(tr.n_epoch for tr in tracks), 1)
+            S = max((tr.Y0.shape[1] if tr.has_ecorr else 1) for tr in tracks)
+            A = np.zeros((self.npsr, M, k, k))
+            a = np.zeros((self.npsr, M, k))
+            Fd = np.zeros((self.npsr, D, k))
+            rd = np.zeros((self.npsr, D))
+            Y0 = np.zeros((self.npsr, E, S, k))
+            V0 = np.zeros((self.npsr, E, S))
+            for i, tr in enumerate(tracks):
+                A[i, :tr.A.shape[0]] = tr.A
+                a[i, :tr.A.shape[0]] = tr.a
+                Fd[i, :tr.n_dense] = tr.Fd
+                rd[i, :tr.n_dense] = tr.rd
+                if tr.has_ecorr:
+                    Y0[i, :tr.n_epoch, :tr.Y0.shape[1]] = tr.Y0
+                    V0[i, :tr.n_epoch, :tr.V0.shape[1]] = tr.V0
+            self._A_stack, self._a_stack = _as_bake(A), _as_bake(a)
+            self._Fd, self._rd = _as_bake(Fd), _as_bake(rd)
+            self._Y0, self._V0 = _as_bake(Y0), _as_bake(V0)
+            self._track_arrays = [t._track_arrays for t in self.transports]
+            self._M, self._D, self._E, self._S = M, D, E, S
+            self.params = sorted(
+                set(self.params) | set().union(*[set(tr.params) for tr in tracks]))
+        else:
+            self._tracking = None
+
     def _pinv(self, params):
         value = kh.jnp.asarray(self._conditioner_precision(params))
         if value.shape != (self.npsr, self.dimension):
@@ -958,15 +1127,50 @@ class ArrayTransport:
             )
         return value
 
+    def _gram(self, params):
+        """Batched (G, b): frozen stacks, or the class-tracked einsums."""
+        if self._tracking is None:
+            return self._G0, self._b0
+        k, jnp = self.dimension, kh.jnp
+        om, pd, om_e, Yadd, vadd, Ss = [], [], [], [], [], []
+        for i, tr in enumerate(self._tracking):
+            w = tr.batched_weights(params, jnp, arrays=self._track_arrays[i])
+            om.append(jnp.pad(w.omega, (0, self._M - w.omega.shape[0])))
+            pd.append(jnp.pad(w.p_dense, (0, self._D - w.p_dense.shape[0])))
+            if w.S is None:
+                om_e.append(jnp.zeros((self._E, self._S), dtype=w.omega.dtype))
+                Yadd.append(jnp.zeros((self._E, k), dtype=w.omega.dtype))
+                vadd.append(jnp.zeros(self._E, dtype=w.omega.dtype))
+                Ss.append(jnp.ones(self._E, dtype=w.omega.dtype))
+            else:
+                E_i = w.S.shape[0]
+                om_e.append(jnp.pad(w.omega_e, ((0, self._E - E_i),
+                                                (0, self._S - w.omega_e.shape[1]))))
+                Yadd.append(jnp.pad(w.Y_add, ((0, self._E - E_i), (0, 0))))
+                vadd.append(jnp.pad(w.v_add, (0, self._E - E_i)))
+                Ss.append(jnp.pad(w.S, (0, self._E - E_i), constant_values=1.0))
+        om, pd, om_e, Yadd, vadd, S = map(jnp.stack, (om, pd, om_e, Yadd, vadd, Ss))
+        Y = jnp.einsum("pej,pejk->pek", om_e, self._Y0) + Yadd
+        v = jnp.sum(om_e * self._V0, axis=2) + vadd
+        G = (jnp.einsum("pm,pmij->pij", om, self._A_stack)
+             + jnp.einsum("pdk,pd,pdl->pkl", self._Fd, pd, self._Fd)
+             - jnp.einsum("pek,pe,pel->pkl", Y, S, Y))
+        b = (jnp.einsum("pm,pmi->pi", om, self._a_stack)
+             + jnp.einsum("pdk,pd->pk", self._Fd, pd * self._rd)
+             - jnp.einsum("pek,pe->pk", Y, S * v))
+        G = 0.5 * (G + jnp.swapaxes(G, 1, 2))
+        return G, (b if self.center else None)
+
     def apply(self, params, c):
         # c: (npsr, k) -- the array coefficient contract.
         i1, i2 = kh.jnp.diag_indices(self.dimension, ndim=2)
+        G, b = self._gram(params)
         cf = kh.jsp.linalg.cho_factor(
-            self._G0.at[:, i1, i2].add(self._pinv(params)), lower=True)
+            G.at[:, i1, i2].add(self._pinv(params)), lower=True)
         am = kh.jsp.linalg.solve_triangular(cf[0], c, trans=1, lower=cf[1])
         ldJ = -kh.jnp.logdet(cf[0][:, i1, i2])            # summed, as today
-        if self._b0 is not None:
-            rhs = self._b0
+        if b is not None:
+            rhs = b
             for E0, coeffs, _name in self._extsignals:
                 ccw = kh.jnp.asarray(coeffs(params))      # (npsr, k_ext)
                 rhs = rhs - kh.jnp.einsum("ijk,ik->ij", E0, ccw)

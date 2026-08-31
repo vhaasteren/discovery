@@ -260,6 +260,38 @@ al = ds.ArrayLikelihood(psls, commongp=commongp, transport=t,
 was built with the same `center_extsignals` list and `psr_slot=i`. It still
 rejects `softclip`. Explicit `transport=` is metamath-only.
 
+### Varying white noise: class-tracked reference
+
+`reference_noise_frozen` pins the white noise the chart whitens against. When
+EFAC/EQUAD/ECORR are sampled, a frozen chart gives the sampler a funnel
+(condition numbers of 10²–10⁵ on IPTA-style pulsars). `class_tracking` bakes
+the same reference *and* the exact Gram of a class-quantized white-noise
+model that follows the white-noise parameters: EFAC exactly, ECORR exactly,
+small backends exactly, EQUAD elsewhere to the spread of TOA errors inside
+0.2-dex classes. Cost: tens of `k×k` matrices plus one `(n_dense × k)` and one
+`(n_epoch × k)` contraction per step — a few ms per pulsar on CPU, against
+tens of ms for the exact Gram.
+
+```python
+ref = tr.class_tracking(psl.white_noise_kernel, params0=noisedict, toaerrs=psr.toaerrs)
+t = tr.Transport(blocks, reference_noise=ref, reference_residual=psl.y, center=True)
+```
+
+or, for the sugar, `ds.ArrayLikelihood(psls, commongp=..., decenter=True,
+decenter_params0=noisedict)`. ECORR may be given either as
+`makenoise_measurement(..., ecorr=True)` or as a fixed `makegp_ecorr`
+component; both are folded into the same Sherman–Morrison form
+(`PulsarLikelihood.white_noise_kernel`). Free ECORR hyperparameters need the
+former; a `makegp_ecorr` without a noisedict is a sampled-amplitude GP in
+`clogL` and is a transport *block*, not white noise. `params0` must be a
+sensible white-noise point (empirical-Bayes dictionary, MPE), not `toaerrs`:
+the chart is exact there and degrades smoothly away from it.
+`transport.diagnostics(params, noise_solve=...)` reports the whitened metric
+eigenvalues against a live solve; `diagnostics()["tracking"]` reports the
+class/dense-row counts and the bake-point digest. The chart is a coordinate
+choice: it never changes the posterior, only the sampler's efficiency.
+`make_packed_clogL` requires frozen noise and refuses a tracked model.
+
 Helpers:
 
 | API | Role |
@@ -268,6 +300,7 @@ Helpers:
 | `tr.globalgp_curn_block(globalgp, psr_slot, npsr)` | Dense global prior → per-pulsar inverse-marginal-variance conditioner |
 | `tr.array_block(F, index, conditioner_precision, name=...)` | Caller-owned basis (e.g. timing); precision is mandatory |
 | `tr.reference_noise(psr)` / `tr.reference_noise_frozen(kernel, params0)` | Freeze $N_0$ for the transport bake |
+| `tr.class_tracking(kernel, params0, toaerrs=...)` | White-noise-tracking reference for sampled EFAC/EQUAD/ECORR (`PulsarLikelihood.white_noise_kernel`) |
 | `Transport` / `ArrayTransport` | Map $\xi\mapsto q$ with log Jacobian |
 | `MarginalTransport` / `marginal_transport(...)` | Live-kernel decentering of one external block against marginalized $C(\eta)$ |
 | `t.fingerprint()` | Stable structural digest (for run manifests) |
