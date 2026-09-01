@@ -435,7 +435,7 @@ def reference_noise_frozen(kernel, params0, description=None):
                         diagonal=diagonal)
 
 
-class _ClassTracking(_FrozenSolve):
+class ClassTracking(_FrozenSolve):
     """Reference-noise operator that ALSO bakes a class-quantized tracker.
 
     `.solve` / `.diagonal()` / `.description` are the frozen kernel at params0,
@@ -474,6 +474,10 @@ class _ClassTracking(_FrozenSolve):
             classgram.validate_class_gram(
                 cg, W, r0, lambda rhs, p: f(rhs, params=p), self._params0)
         return cg
+
+
+# backwards-compatible private alias (the public marker is ClassTracking)
+_ClassTracking = ClassTracking
 
 
 def class_tracking(kernel, params0, *, toaerrs, sigma_bin_dex=0.2,
@@ -527,7 +531,7 @@ def class_tracking(kernel, params0, *, toaerrs, sigma_bin_dex=0.2,
         f"(bin {sigma_bin_dex} dex, threshold {dense_threshold}: "
         f"{layout.n_class} classes, {layout.n_dense} dense rows, "
         f"{struct.n_epoch} epochs)")
-    return _ClassTracking(kernel, params0, struct, layout,
+    return ClassTracking(kernel, params0, struct, layout,
                           lambda rhs: f(rhs, params=params0), desc, diagonal,
                           validate, sigma_bin_dex, dense_threshold)
 
@@ -644,7 +648,7 @@ class Transport:
         # G0/b0 above stay frozen at params0 (certifier probes, diagnostics);
         # with tracking, the per-evaluation factor uses the tracked (G, b).
         self._tracking = None
-        if isinstance(reference_noise, _ClassTracking):
+        if isinstance(reference_noise, ClassTracking):
             r_bake = (np.asarray(reference_residual, dtype=np.float64) if center
                       else np.zeros(self._ntoa))
             self._tracking = reference_noise.bake(W, r_bake)

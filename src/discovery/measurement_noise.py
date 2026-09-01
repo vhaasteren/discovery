@@ -174,7 +174,7 @@ def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False, ecorr=Fal
         kern = kernels.NoiseMatrixSM(N, egp.F, P)
         ecorr_backends = [bf for bf in sorted(set(selection(psr))) if bf != '']
         kern.measurement = {'name': 'measurement', 'params': params, 'psrname': psr.name,
-                        'toaerrs': np.asarray(psr.toaerrs, dtype=np.float64),
+                            'toaerrs': np.asarray(psr.toaerrs, dtype=np.float64),
                             'fixed': is_const, 'ecorr': True,
                             'ecorr_params': [f'{psr.name}_{b}_log10_ecorr' for b in ecorr_backends],
                             'ecorr_basis_shape': tuple(np.shape(egp.F))}
@@ -182,6 +182,6 @@ def makenoise_measurement(psr, noisedict={}, scale=1.0, tnequad=False, ecorr=Fal
     else:
         kern = kernels.NoiseMatrix1D(N)
         kern.measurement = {'name': 'measurement', 'params': params, 'psrname': psr.name,
-                        'toaerrs': np.asarray(psr.toaerrs, dtype=np.float64),
+                            'toaerrs': np.asarray(psr.toaerrs, dtype=np.float64),
                             'fixed': is_const, 'ecorr': False}
         return kern

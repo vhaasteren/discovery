@@ -1796,6 +1796,7 @@ def _tracked_and_frozen(psr, psrs, i, **kw):
 
 def _hyper_params(transport, psr, seed=0):
     """A params dict for every transport parameter, white noise at the bake point."""
+    np.random.seed(seed)                      # ds.sample_uniform draws from the global RNG
     p = ds.sample_uniform(transport.params)
     p.update(_wn_params0(psr))
     return p
@@ -1908,4 +1909,9 @@ def test_arraylikelihood_decenter_params0_tracks_free_white_noise(psrs, metamath
         model.make_packed_clogL()
     with pytest.raises(ValueError, match="decenter_params0"):
         ds.ArrayLikelihood([_psl_freewn(p) for p in psrs], commongp=_commongp(psrs),
+                           decenter_params0=p0)
+    per = [_transport_for(p, psrs, i) for i, p in enumerate(psrs)]
+    with pytest.raises(ValueError, match="mutually exclusive|decenter_params0"):
+        ds.ArrayLikelihood([_psl_freewn(p) for p in psrs], commongp=_commongp(psrs),
+                           decenter=True, transport=tr.ArrayTransport(per),
                            decenter_params0=p0)
