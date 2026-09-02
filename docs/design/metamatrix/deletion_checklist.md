@@ -2,9 +2,10 @@
 
 Phases 0–4 of the metamatrix migration are **done**: shared substrate, kernel
 factory, `likelihood_metamath`, parity coverage, and carry-overs (mixed-Φ
-`CompoundGP`, `CompoundGlobalGP`). The metamath path is the default. This
+`CompoundGP`, `CompoundGlobalGP`). The metamath path is fully functional and
+opt-in (`ds.config(kernels="metamath")`); the default remains `matrix`. This
 document is only the remaining **cutover** once maintainers sign off after
-external review.
+external review, and after the Phase-7 default flip.
 
 Living summary: [Metamatrix developer guide](../../metamatrix_dev.md) §14.
 Constructor coverage: [parity_coverage.md](parity_coverage.md).

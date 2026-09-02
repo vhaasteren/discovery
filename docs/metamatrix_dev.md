@@ -14,7 +14,8 @@ transition, not a second product line.
 
 **Current state.**
 
-- Default: `discovery.config()` → `"metamath"`.
+- Default: `discovery.config()` → `"matrix"`. Metamath is opt-in
+  (`ds.config(kernels="metamath")` before constructing models).
 - Production code builds kernels through `_kernels` factory; signals/deterministic
   do not hard-code matrix classes.
 - `likelihood_metamath.py` composes metamath kernels directly (no `matrix`
@@ -55,9 +56,10 @@ Top-level switch (`src/discovery/__init__.py`):
 1. Sets `_kernels` mode.
 2. Rebinds `discovery.PulsarLikelihood` / `GlobalLikelihood` / `ArrayLikelihood`
    to the chosen module.
-3. At import, calls `config(kernels="metamath")` so factory mode and class
-   bindings stay in lock-step (the star-import from `likelihood` would otherwise
-   leave matrix classes bound).
+3. At import, calls `config(kernels=_KERNELS)` so factory mode and class
+   bindings stay in lock-step. `_KERNELS` is `"matrix"` (the star-import from
+   `likelihood` already binds matrix classes; the call is currently a no-op).
+   The Phase-7 flip sets `_KERNELS = "metamath"`.
 
 ---
 
@@ -351,8 +353,8 @@ require_metamath(feature)  → NotImplementedError unless metamath mode
 | mh_native | `likelihood_metamath.py` | metamath factory |
 
 The matrix route **must** set mode explicitly and restore the module default —
-after the default flip, forgetting this turns every comparison into
-self-comparison under metamath.
+forgetting this after a future default flip would turn every comparison into
+self-comparison under metamath. The autouse fixture (9.3) is the backstop.
 
 ### 9.3 Autouse fixture
 

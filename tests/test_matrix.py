@@ -21,8 +21,9 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 def _matrix_mode():
     """This file tests `matrix.py` kernels directly (concrete Woodbury classes,
     solve_1d/solve_2d). The factory only returns them under matrix mode, which
-    is no longer the default after the metamath default flip -- pin it. The root conftest
-    autouse fixture restores the module default afterward."""
+    is the module default; pin it anyway so the file stays correct if the
+    default flips. The root conftest autouse fixture restores the module
+    default afterward."""
     ds.config(kernels="matrix")
     yield
 
