@@ -133,3 +133,8 @@ dmypy.json
 
 # OS X
 .DS_Store
+
+# Editor swap / backup files
+*.swp
+*.swo
+*~

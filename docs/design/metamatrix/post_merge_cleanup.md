@@ -1,4 +1,4 @@
-# Post-merge cleanup (Phase 3)
+# Post-merge cleanup
 
 Guarded-but-not-deleted surfaces from the dual-path merge PR. Removals happen
 in one reviewable, almost-all-red PR on `main` after the merge. No behavior
@@ -18,6 +18,11 @@ Gate: full suite green, `git diff --stat` net-negative, zero changes under
 
 These raise `NotImplementedError` pointing here. After cleanup the guard *is*
 the method body (~254 lines of dead code under the raise go away).
+
+`GlobalLikelihood.logL` still assigns `self.ys` and mutates
+`self.globalgp.Phi.inv` inside the cached property (same class of leftover
+as the old `self.gsm` write). Use locals when the dead `make_kernelterms`
+branch is deleted.
 
 ## Delete outright (not likelihood frontends — no guards)
 
