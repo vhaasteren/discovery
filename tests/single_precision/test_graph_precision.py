@@ -315,6 +315,7 @@ def test_pin_forces_f64_accumulation():
         _ = 0.0 + d                 # a downstream working-dtype (f32) consumer
         return mm.func(g.graph)
 
+    saved = ds.config()
     ds.config(kernels="metamath")
     utils.config(backend="jax", working=jnp.float32)
     try:
@@ -322,7 +323,7 @@ def test_pin_forces_f64_accumulation():
         assert float(make(False)(y, Nmy)) == 0.0, "unpinned f32 dot unexpectedly survived"
     finally:
         utils.config(backend="jax")
-        ds.config(kernels="matrix")
+        ds.config(kernels=saved)
 
 
 # --- Stage 2c: the array / fused likelihood path in float32 --------------------

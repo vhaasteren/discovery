@@ -89,6 +89,13 @@ def _build_frontends(obj, names):
     return obj
 
 
+_METAMATH_KERNELTERMS_UNAVAILABLE = (
+    "not supported on the metamath kernel path: requires make_kernelterms, "
+    "which metamath kernels do not implement (see docs/design/metamatrix/"
+    "post_merge_cleanup.md); use kernels='matrix' or the documented frontends."
+)
+
+
 class PulsarLikelihood(summary.SummaryMixin):
     """Single-pulsar likelihood — metamath-native composition.
 
@@ -379,6 +386,7 @@ class GlobalLikelihood(summary.SummaryMixin):
 
                 loglike = ffunc(gsm.make_kernelproduct(self.ys))
             else:
+                raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
                 P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
                 kterms = [psl.N.make_kernelterms(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
 
@@ -450,6 +458,7 @@ class GlobalLikelihood(summary.SummaryMixin):
             local_list = sorted(set.union(*[set(logl.params) for logl in logls]))
             loglike.params = sorted(set([p for l in mpicomm.allgather(local_list) for p in l]))
         else:
+            raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
             # handle the case where there are more matrices in self.globalgp than likelihoods
             Fmats = {name: Fmat for name, Fmat in zip(self.globalgp.name, self.globalgp.Fs)}
             kterms = [psl.N.make_kernelterms(psl.y, Fmats[psl.name]) for psl in self.psls]
@@ -962,6 +971,7 @@ class ArrayLikelihood(summary.SummaryMixin):
                 # cached gsm builder when reference= is set.
                 loglike = ffunc(gsm.make_kernelproduct(ys))
             else:
+                raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
                 P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
                 kterms = vsm.make_kernelterms(ys, self.globalgp.Fs)
 
@@ -1009,6 +1019,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         return loglike
 
     def cglogL(self, cgmaxiter=100, make_logdet='CG-MDL', detmatvecs=5, detsamples=200, clip=None):
+        raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
         vsm, ys = self._marginal_assembly
 
         if self.globalgp is None:
