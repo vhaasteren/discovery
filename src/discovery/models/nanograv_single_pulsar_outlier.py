@@ -21,6 +21,7 @@ import numpyro.infer
 from .. import likelihood
 from .. import prior
 from .. import signals
+from .. import _kernels
 
 
 # Standard discovery priors + outlier-specific knobs.
@@ -61,6 +62,8 @@ def make_outlier_likelihood(psr, *,
     Returns:
         A configured `PulsarLikelihood`.
     """
+    _kernels.require_matrix(
+        "discovery.models.nanograv_single_pulsar_outlier.make_outlier_likelihood")
     if Tspan is None:
         Tspan = signals.getspan(psr)
     if psd is None:

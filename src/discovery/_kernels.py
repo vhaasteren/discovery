@@ -95,6 +95,16 @@ def require_metamath(feature):
             "discovery.config(kernels='metamath') before building the model.")
 
 
+def require_matrix(feature):
+    """Raise unless the matrix kernel path is active. Used by model builders
+    that construct matrix.* classes directly."""
+    if _mode != "matrix":
+        raise NotImplementedError(
+            f"{feature} constructs matrix-path kernels directly and is not "
+            f"supported under kernels={_mode!r}; call "
+            f"ds.config(kernels='matrix') first.")
+
+
 # ---------------------------------------------------------------------------
 # Collapsed constructors
 # ---------------------------------------------------------------------------
