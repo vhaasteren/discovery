@@ -647,6 +647,14 @@ class Transport:
             self._track_arrays = tuple(None if x is None else _as_bake(x)
                                        for x in self._tracking.arrays())
 
+        if self._tracking is not None and center_extsignals:
+            raise NotImplementedError(
+                "class_tracking with center_extsignals is not supported: the ExtSignal "
+                "centering term E0 = W^T N0^-1 F_ext is formed from the frozen reference "
+                "noise, while tracking makes b = W^T N(theta)^-1 r0 live — the mixed "
+                "centering translation is silently wrong. Form E0 through the tracked "
+                "operator before enabling this combination.")
+
         # -- ExtSignal-subtracted centering ----------------------------------
         # Bake E0_e = W^T N0^-1 Fext_i once; per eval subtract E0_e @ coeffs_e[i]
         # from b0 before the centering solve. A translation only; ldJ unchanged.

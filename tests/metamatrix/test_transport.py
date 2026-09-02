@@ -1917,6 +1917,21 @@ def test_array_transport_tracking_matches_stacked_per_pulsar(psrs, metamath_back
         tr.ArrayTransport([per[0], _transport_for(psrs[1], psrs, 1)])
 
 
+def test_class_tracking_with_center_extsignals_raises(psrs, metamath_backend):
+    """Tracking plus ExtSignal centering mixes a frozen E0 with a live b."""
+    psr = psrs[0]
+    r0 = np.asarray(psr.residuals)
+    Fext = np.random.default_rng(3).standard_normal((r0.shape[0], 2))
+    es = _FakeExtSignal([Fext], 2, name="cw")
+    with pytest.raises(NotImplementedError, match="class_tracking with center_extsignals"):
+        tr.Transport(
+            _blocks_for(psrs, 0),
+            reference_noise=tr.class_tracking(
+                _wn_kernel(psr), _wn_params0(psr), toaerrs=psr.toaerrs),
+            reference_residual=r0, center=True,
+            center_extsignals=[es], psr_slot=0)
+
+
 def test_arraylikelihood_decenter_params0_tracks_free_white_noise(psrs, metamath_backend):
     p0 = {}
     for p in psrs:
