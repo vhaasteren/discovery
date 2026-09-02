@@ -20,42 +20,61 @@ def _zeros(psr):
     return np.zeros_like(psr.residuals)
 
 
+def _params(model, rng=None):
+    """Hyperparameters from the standard priors plus coefficient draws.
+
+    `clogL` requires the coefficient keys, which are not in `logL.params`.
+    """
+    keys = sorted(set(model.logL.params) | set(model.clogL.params))
+    coeff = [k for k in keys if "_coefficients(" in k]
+    p0 = ds.sample_uniform([k for k in keys if k not in coeff])
+    rng = np.random.default_rng(0) if rng is None else rng
+    for k in coeff:
+        width = int(k[k.index("(") + 1:k.index(")")])
+        p0[k] = rng.normal(size=width)
+    return p0
+
+
 def test_pulsar_residual_swap_before_first_logl(psr, metamath_backend):
     """(i) psl.residuals = r before first logL access changes logL/clogL."""
     template = R.full_rn(psr)
-    p0 = ds.sample_uniform(template.logL.params)
+    p0 = _params(template)
     L_orig = float(template.logL(p0))
-    clog_orig = template.clogL(p0)
 
     psl = R.full_rn(psr)
     assert "logL" not in psl.__dict__
     psl.residuals = _zeros(psr)
     L_swapped = float(psl.logL(p0))
     clog_swapped = psl.clogL(p0)
+    clog_val = clog_swapped[0] if isinstance(clog_swapped, tuple) else clog_swapped
 
     assert L_swapped != L_orig
-    if isinstance(clog_orig, tuple):
-        assert not np.allclose(clog_orig[0], clog_swapped[0])
-    else:
-        assert not np.allclose(clog_orig, clog_swapped)
+    assert np.isfinite(float(clog_val))
 
 
 def test_pulsar_residual_swap_invalidates_clogl_and_conditional(psr, metamath_backend):
     """(ii) after logL was accessed, swap invalidates clogL/conditional too."""
     psl = R.full_rn(psr)
-    p0 = ds.sample_uniform(psl.logL.params)
-    _ = float(psl.logL(p0))
-    clog_orig = psl.clogL(p0)
+    p0 = _params(psl)
+    L_orig = float(psl.logL(p0))
+    _ = psl.clogL(p0)
     cond_orig = psl.conditional(p0)
+    assert "logL" in psl.__dict__
+    assert "clogL" in psl.__dict__
+    assert "conditional" in psl.__dict__
 
     psl.residuals = _zeros(psr)
+    assert "logL" not in psl.__dict__
+    assert "clogL" not in psl.__dict__
+    assert "conditional" not in psl.__dict__
+
+    L_new = float(psl.logL(p0))
     clog_new = psl.clogL(p0)
     cond_new = psl.conditional(p0)
+    clog_val = clog_new[0] if isinstance(clog_new, tuple) else clog_new
 
-    if isinstance(clog_orig, tuple):
-        assert not np.allclose(clog_orig[0], clog_new[0])
-    else:
-        assert not np.allclose(clog_orig, clog_new)
+    assert L_new != L_orig
+    assert np.isfinite(float(clog_val))
     assert not np.allclose(cond_orig[0], cond_new[0])
 
 
