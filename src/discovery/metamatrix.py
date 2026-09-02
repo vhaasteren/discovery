@@ -130,6 +130,20 @@ Graph = Dict[str, Union[Leaf, Node]]
 class Apply:
     pass
 
+def _const_leaf(value, name=None):
+    """The only sanctioned way to create a ConstLeaf from a runtime value.
+    Rejects JAX tracers (also inside tuples/pytrees, e.g. a (mu, cf) pair) so a
+    graph folded inside jit/grad fails loudly instead of caching leaked tracers."""
+    for leaf in jax.tree_util.tree_leaves(value):
+        if isinstance(leaf, jax.core.Tracer):
+            raise TypeError(
+                f"graph constant {name or '<unnamed>'} is a JAX tracer: likelihood "
+                "graphs must be materialized outside jit/grad. Touch model.logL / "
+                "model.clogL (or call model.build()) once eagerly, then jit the "
+                "returned callable — e.g. jax.jit(model.logL), not "
+                "jax.jit(lambda p: model.logL(p)).")
+    return ConstLeaf(value)
+
 def make_leaf(x, name=None) -> Leaf:
     if x is None:
         return ArgLeaf(name=name)
@@ -138,7 +152,7 @@ def make_leaf(x, name=None) -> Leaf:
     elif isinstance(x, OrderedDict):
         return GraphLeaf(graph=x)
     else:
-        return ConstLeaf(value=x)
+        return _const_leaf(x, name=name)
 
 
 # args takes None and values; the latter will be replaced into ArgLeafs
@@ -191,7 +205,7 @@ def fold_constants(graph, args=[]):
         if isinstance(node, ArgLeaf):
             if len(args_cache) and (argval := args_cache.popleft()) is not None:
                 cache[name] = argval
-                new_graph[name] = ConstLeaf(value=argval)
+                new_graph[name] = _const_leaf(argval, name=name)
             else:
                 new_graph[name] = node
         elif isinstance(node, ConstLeaf):
@@ -202,7 +216,7 @@ def fold_constants(graph, args=[]):
                 with jax.default_device(cpu_device):
                     val = node.fn(params={})
                 cache[name] = val
-                new_graph[name] = ConstLeaf(val)
+                new_graph[name] = _const_leaf(val, name=name)
             else:
                 new_graph[name] = node
         elif isinstance(node, GraphLeaf):
@@ -250,7 +264,7 @@ def fold_constants(graph, args=[]):
                 with jax.default_device(cpu_device):
                     val = node.op(*[cache[input] for input in node.inputs])
                 cache[name] = val
-                new_graph[name] = ConstLeaf(val)
+                new_graph[name] = _const_leaf(val, name=name)
                 _maybe_evict(node.inputs, True)
 
             else:

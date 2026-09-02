@@ -79,6 +79,16 @@ def _invalidate(obj):
         obj.__dict__.pop(name, None)
 
 
+def _build_frontends(obj, names):
+    """Materialize named cached frontends now, outside any JAX trace."""
+    for name in names:
+        try:
+            getattr(obj, name)
+        except (NotImplementedError, ValueError):
+            pass
+    return obj
+
+
 class PulsarLikelihood(summary.SummaryMixin):
     """Single-pulsar likelihood — metamath-native composition.
 
@@ -196,6 +206,11 @@ class PulsarLikelihood(summary.SummaryMixin):
         else:
             self.__dict__[name] = value
 
+    def build(self, names=('logL', 'clogL', 'conditional')):
+        """Materialize the named frontends now, outside any JAX trace.
+        Skips frontends this model does not support."""
+        return _build_frontends(self, names)
+
     @functools.cached_property
     def sample_conditional(self):
         cond = self.conditional
@@ -288,6 +303,11 @@ class GlobalLikelihood(summary.SummaryMixin):
             _invalidate(self)
         else:
             self.__dict__[name] = value
+
+    def build(self, names=('logL', 'clogL', 'conditional')):
+        """Materialize the named frontends now, outside any JAX trace.
+        Skips frontends this model does not support."""
+        return _build_frontends(self, names)
 
     @functools.cached_property
     def sample(self):
@@ -670,6 +690,11 @@ class ArrayLikelihood(summary.SummaryMixin):
                     f"ArrayLikelihood.{name} cannot be reassigned after construction "
                     f"(validation runs only in __init__); build a new ArrayLikelihood.")
         self.__dict__[name] = value
+
+    def build(self, names=('logL', 'clogL', 'conditional')):
+        """Materialize the named frontends now, outside any JAX trace.
+        Skips frontends this model does not support."""
+        return _build_frontends(self, names)
 
     def _freeze_reference(self, Phi):
         """Thin top layer: evaluate a GP level's prior covariance Phi at the
