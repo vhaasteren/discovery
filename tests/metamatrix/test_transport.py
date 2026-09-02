@@ -1746,6 +1746,37 @@ def test_bake_is_float64_under_float32_working(psrs, cholesky_backend):
         assert np.isfinite(float(h))
 
 
+def test_marginal_transport_baked_in_float64_under_float32_working(
+        metamath_backend, cholesky_backend):
+    """MarginalTransport _factor products stay float64 under a float32 working
+    dtype, and the transformed density matches the float64-config build."""
+    rng = np.random.default_rng(8)
+    toy = _build_toy_marginal(rng)
+    n = toy["n0"].shape[0]
+    W = rng.standard_normal((n, 3))
+    y = rng.standard_normal(n)
+    block, _ = _make_block(W)
+    eta = _eta(toy["eta_names"], rng)
+    xi = rng.standard_normal(3)
+
+    t64 = tr.marginal_transport(toy["K"], y, block, center=True)
+    _, b64, _ = t64._factor(eta)
+    z64, ld64 = t64.apply(eta, xi)
+
+    def build():
+        return tr.marginal_transport(toy["K"], y, block, center=True)
+    t32 = _with_float32_working(build)
+    _, b32, _ = t32._factor(eta)
+    z32, ld32 = t32.apply(eta, xi)
+    _, G32 = t32._ks(eta)
+
+    assert np.asarray(b32).dtype == np.float64
+    assert np.asarray(G32).dtype == np.float64
+    np.testing.assert_allclose(np.asarray(b32), np.asarray(b64), rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(z32), np.asarray(z64), rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(ld32), np.asarray(ld64), rtol=1e-10)
+
+
 def test_indefinite_reference_gram_raises_at_construction(psrs, metamath_backend):
     """A reference-noise solve too inaccurate to bake from is diagnosed at
     construction instead of surfacing as NaN factorizations at runtime."""

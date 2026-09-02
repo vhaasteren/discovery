@@ -381,7 +381,7 @@ def build_callable_from_graph(graph: Graph, working=None):
 
                 if isinstance(graph[first], GraphLeaf):
                     args = [_cast_to(env[input], target) for input in node.inputs[1:]]
-                    env[name] = graph_leaves[first](*args, params=params)
+                    env[name] = _cast_to(graph_leaves[first](*args, params=params), target)
                 else:
                     raise NotImplementedError(f"Should we apply {first}?")
             else:
@@ -811,11 +811,13 @@ class GraphBuilder:
 
     def pin_f64(self, symbol: Sym) -> Sym:
         """Mark a node to be computed in float64 even under a float32 working
-        dtype (stage-2 single precision). Everything the node depends on is
-        pulled into float64 too, so the pinned value is built entirely in
-        float64; the result is converted to a consumer's dtype on read. This is
-        graph intent set where the kernel math is written -- not a func()/
-        materialization call -- so the house rule (methods return graphs) holds.
+        dtype (stage-2 single precision). Ancestor Nodes in this graph are
+        pulled into float64 too, so the pinned value is built in float64
+        within this graph; the result is converted to a consumer's dtype on
+        read. The f64 cone stops at GraphLeaf (subgraph) boundaries -- a pin
+        does not recurse into nested graphs (Phase 6). This is graph intent
+        set where the kernel math is written -- not a func()/materialization
+        call -- so the house rule (methods return graphs) holds.
         Returns the symbol so it can be used inline.
         """
         node = self.graph[symbol.name]
