@@ -5,7 +5,7 @@ factory, `likelihood_metamath`, parity coverage, and carry-overs (mixed-Φ
 `CompoundGP`, `CompoundGlobalGP`). The metamath path is fully functional and
 opt-in (`ds.config(kernels="metamath")`); the default remains `matrix`. This
 document is only the remaining **cutover** once maintainers sign off after
-external review, and after the Phase-7 default flip.
+external review, and after the default has been flipped to metamath.
 
 Living summary: [Metamatrix developer guide](../../metamatrix_dev.md) §14.
 Constructor coverage: [parity_coverage.md](parity_coverage.md).

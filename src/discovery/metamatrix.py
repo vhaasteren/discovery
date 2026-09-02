@@ -815,7 +815,7 @@ class GraphBuilder:
         pulled into float64 too, so the pinned value is built in float64
         within this graph; the result is converted to a consumer's dtype on
         read. The f64 cone stops at GraphLeaf (subgraph) boundaries -- a pin
-        does not recurse into nested graphs (Phase 6). This is graph intent
+        does not recurse into nested graphs. This is graph intent
         set where the kernel math is written -- not a func()/materialization
         call -- so the house rule (methods return graphs) holds.
         Returns the symbol so it can be used inline.

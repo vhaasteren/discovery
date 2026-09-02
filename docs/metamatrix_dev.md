@@ -59,7 +59,7 @@ Top-level switch (`src/discovery/__init__.py`):
 3. At import, calls `config(kernels=_KERNELS)` so factory mode and class
    bindings stay in lock-step. `_KERNELS` is `"matrix"` (the star-import from
    `likelihood` already binds matrix classes; the call is currently a no-op).
-   The Phase-7 flip sets `_KERNELS = "metamath"`.
+   Flipping the default later is setting `_KERNELS = "metamath"`.
 
 ---
 
