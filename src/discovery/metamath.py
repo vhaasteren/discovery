@@ -1217,14 +1217,16 @@ class WoodburyKernel(Kernel):
     def make_kernelproduct(self, y):
         return woodbury(y, self.N.make_solve, self.F, self.P.make_inv)
 
-    def make_kernelsolve(self, y, T):
+    def make_kernelsolve(self, y, T, working=None):
         """Callable returning (T^T Σ^-1 y, T^T Σ^-1 T) for Σ = N + F P F^T.
 
         Matches the contract of matrix.WoodburyKernel_var*.make_kernelsolve
         so likelihood.py's GlobalLikelihood.conditional path works unchanged.
+        `working` is forwarded to `metamatrix.func` (construction-time bake
+        dtype; default `utils.working_dtype()`).
         """
         graph = woodburykernelsolve(y, T, self.N.make_solve, self.F, self.P.make_inv)
-        f = mm.func(graph)
+        f = mm.func(graph, working=working)
         def call(params={}):
             return f(params=params)
         call.params = f.params

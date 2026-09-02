@@ -61,9 +61,9 @@ class SeparableFourierPrior:
             raise ValueError("separable ORF must be positive definite")
         chol = np.linalg.cholesky(orf)
         return cls(
-            orf_cholesky=kh.to_working(chol),
+            orf_cholesky=kh.jnp.asarray(chol, dtype=kh.bake_dtype()),
             orf_logdet=float(logdet),
-            orf_diagonal=kh.to_working(np.diag(orf)),
+            orf_diagonal=kh.jnp.asarray(np.diag(orf), dtype=kh.bake_dtype()),
             spectrum=spectrum,
             npsr=orf.shape[0],
             width=int(width),
@@ -79,7 +79,7 @@ class SeparableFourierPrior:
         # (1 ns)^2-scale variance is quantized and its second derivative
         # overflows (phi**-3 > float32 max), which makes hyperparameter
         # Hessians NaN.
-        dtype = kh.jnp.float64 if kh.jax.config.x64_enabled else None
+        dtype = kh.bake_dtype()
         phi = kh.jnp.asarray(self.spectrum(params), dtype=dtype)
         orf = kh.jnp.asarray(self.orf_diagonal, dtype=dtype)
         return 1.0 / (orf[:, None] * phi[None, :])

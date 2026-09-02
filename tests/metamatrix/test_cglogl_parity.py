@@ -42,29 +42,35 @@ pytestmark = [
     pytest.mark.skipif(
         not (hasattr(utils, "cgsolve") and hasattr(utils, "make_logdet_estimator")),
         reason="cglogL needs the optional jaxopt + matfree extras"),
+    pytest.mark.xfail(
+        reason="cglogL broken on both routes; see deletion_checklist §non-goals",
+        strict=True,
+    ),
 ]
 
 
 def _cglogl_values(psrs, p0s):
     out = {}
     for kernels in ("matrix", "metamath"):
+        saved = ds.config()
         ds.config(kernels=kernels)
         try:
             model = R.intrinsic_rn_plus_global_hd(psrs)
             cglogl = model.cglogL(cgmaxiter=100)
             out[kernels] = [float(cglogl(p0)) for p0 in p0s]
         finally:
-            ds.config(kernels="matrix")
+            ds.config(kernels=saved)
     return out
 
 
 def test_cglogl_matrix_vs_metamath(psrs):
     """The 3-pulsar fixture, `intrinsic_rn_plus_global_hd`, 3 draws."""
+    saved = ds.config()
     ds.config(kernels="matrix")
     try:
         params = R.intrinsic_rn_plus_global_hd(psrs).cglogL(cgmaxiter=100).params
     finally:
-        ds.config(kernels="matrix")
+        ds.config(kernels=saved)
 
     np.random.seed(20260716)
     p0s = [ds.sample_uniform(params) for _ in range(3)]

@@ -114,6 +114,16 @@ def working_dtype():
 def to_working(a):
     return jnp.asarray(a, dtype=_working_dtype)
 
+def bake_dtype():
+    """Float dtype for construction-time products (G0, b0, E0, conditioner
+    precisions): float64 whenever x64 is enabled, independent of
+    `utils.working_dtype()`. A float32 *sampling* configuration must never
+    degrade a baked constant: `W^T N0^{-1} W` through the timing-model Woodbury
+    loses ~1e-5 relative accuracy in float32 (far worse under TF32 GPU matmul),
+    which makes G0 indefinite and the transport factorization NaN once the
+    prior precision drops below |lambda_min(G0)|."""
+    return jnp.float64 if jax.config.x64_enabled else jnp.float32
+
 # CG solver and Lanczos-Hutchinson logdet estimator, need matfree and jaxopt
 try:
     import jaxopt

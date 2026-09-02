@@ -67,6 +67,35 @@ def ffunc(graph):
     return outfunc
 
 
+def _cached_property_names(cls):
+    return frozenset(
+        name for klass in cls.__mro__
+        for name, attr in vars(klass).items()
+        if isinstance(attr, functools.cached_property))
+
+
+def _invalidate(obj):
+    for name in _cached_property_names(type(obj)):
+        obj.__dict__.pop(name, None)
+
+
+def _build_frontends(obj, names):
+    """Materialize named cached frontends now, outside any JAX trace."""
+    for name in names:
+        try:
+            getattr(obj, name)
+        except (NotImplementedError, ValueError):
+            pass
+    return obj
+
+
+_METAMATH_KERNELTERMS_UNAVAILABLE = (
+    "not supported on the metamath kernel path: requires make_kernelterms, "
+    "which metamath kernels do not implement (see docs/design/metamatrix/"
+    "post_merge_cleanup.md); use kernels='matrix' or the documented frontends."
+)
+
+
 class PulsarLikelihood(summary.SummaryMixin):
     """Single-pulsar likelihood — metamath-native composition.
 
@@ -176,13 +205,11 @@ class PulsarLikelihood(summary.SummaryMixin):
                 self.name = gp.name
 
     def __setattr__(self, name, value):
-        if name == 'residuals' and 'logL' in self.__dict__:
-            self.y = value
-
+        if name == 'residuals' and 'y' in self.__dict__:      # post-construction swap
+            object.__setattr__(self, 'y', value)
             if len(self.delay) > 0:
-                self.y = metamath.CompoundDelay(self.y, self.delay)
-
-            del self.logL
+                object.__setattr__(self, 'y', metamath.CompoundDelay(self.y, self.delay))
+            _invalidate(self)
         else:
             self.__dict__[name] = value
 
@@ -204,6 +231,11 @@ class PulsarLikelihood(summary.SummaryMixin):
             raise ValueError("measurement kernel carries no toaerrs; build it with "
                              "makenoise_measurement / makenoise_measurement_simple")
         return np.asarray(meas["toaerrs"], dtype=np.float64)
+
+    def build(self, names=('logL', 'clogL', 'conditional')):
+        """Materialize the named frontends now, outside any JAX trace.
+        Skips frontends this model does not support."""
+        return _build_frontends(self, names)
 
     @functools.cached_property
     def sample_conditional(self):
@@ -291,15 +323,17 @@ class GlobalLikelihood(summary.SummaryMixin):
 
     # allow replacement of residuals
     def __setattr__(self, name, value):
-        if name == 'residuals':
+        if name == 'residuals' and 'psls' in self.__dict__:
             for psl, y in zip(self.psls, value):
-                psl.y = y
-
-            for p in ['os', 'os_rhosigma', 'logL', 'sample_conditional', 'conditional']:
-                if p in self.__dict__:
-                    delattr(self, p)
+                psl.residuals = y
+            _invalidate(self)
         else:
             self.__dict__[name] = value
+
+    def build(self, names=('logL', 'clogL', 'conditional')):
+        """Materialize the named frontends now, outside any JAX trace.
+        Skips frontends this model does not support."""
+        return _build_frontends(self, names)
 
     @functools.cached_property
     def sample(self):
@@ -367,10 +401,11 @@ class GlobalLikelihood(summary.SummaryMixin):
             if isinstance(self.globalgp.Phi, metamath.NoiseMatrix):
                 Ns, self.ys = zip(*[(psl.N, psl.y) for psl in self.psls])
                 self.globalgp.Phi.inv = getattr(self.globalgp, 'Phi_inv', None)
-                self.gsm = metamath.GlobalWoodburyKernel(Ns, self.globalgp.Fs, self.globalgp.Phi)
+                gsm = metamath.GlobalWoodburyKernel(Ns, self.globalgp.Fs, self.globalgp.Phi)
 
-                loglike = ffunc(self.gsm.make_kernelproduct(self.ys))
+                loglike = ffunc(gsm.make_kernelproduct(self.ys))
             else:
+                raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
                 P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
                 kterms = [psl.N.make_kernelterms(psl.y, Fmat) for psl, Fmat in zip(self.psls, self.globalgp.Fs)]
 
@@ -442,6 +477,7 @@ class GlobalLikelihood(summary.SummaryMixin):
             local_list = sorted(set.union(*[set(logl.params) for logl in logls]))
             loglike.params = sorted(set([p for l in mpicomm.allgather(local_list) for p in l]))
         else:
+            raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
             # handle the case where there are more matrices in self.globalgp than likelihoods
             Fmats = {name: Fmat for name, Fmat in zip(self.globalgp.name, self.globalgp.Fs)}
             kterms = [psl.N.make_kernelterms(psl.y, Fmats[psl.name]) for psl in self.psls]
@@ -643,6 +679,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         self.transport = transport
         if transport is not None:
             self._validate_transport_compatibility()  # eagerly builds assembly
+        self._constructed = True
 
     def _validate_transport_compatibility(self):
         vsm, _ = self._coefficient_assembly
@@ -669,20 +706,34 @@ class ArrayLikelihood(summary.SummaryMixin):
                 f"transport dimension {self.transport.dimension} does not "
                 f"match coefficient widths {widths}")
 
-    # Cached properties that feed on `self.reference`. Assigning it after
-    # construction (the single-precision opt-in workflow does exactly this) must
-    # invalidate them, or the refdelta leaves would be decided by whichever
-    # property happened to be touched first — the staleness the two cached
-    # assemblies exist to prevent.
-    _REFERENCE_DEPENDENT = ('_marginal_assembly', '_coefficient_assembly',
-                            'logL', 'clogL', 'conditional', 'sample_conditional',
-                            'gsm')
+    # `reference` is the documented post-init mutation (single-precision opt-in
+    # assigns it after construction). Everything else structural is frozen:
+    # validation runs only in __init__.
+    _MUTABLE = ('reference',)
+    _STRUCTURAL = ('psls', 'commongp', 'globalgp', 'transform', 'transport',
+                   'decenter', 'extsignals', 'clogl_form', 'decenter_params0')
 
     def __setattr__(self, name, value):
-        if name == 'reference' and 'reference' in self.__dict__:
-            for cached in self._REFERENCE_DEPENDENT:
-                self.__dict__.pop(cached, None)
+        if self.__dict__.get('_constructed'):
+            if name == 'residuals':
+                for psl, y in zip(self.psls, value):
+                    psl.residuals = y
+                _invalidate(self)
+                return
+            if name in self._MUTABLE:
+                self.__dict__[name] = value
+                _invalidate(self)
+                return
+            if name in self._STRUCTURAL:
+                raise AttributeError(
+                    f"ArrayLikelihood.{name} cannot be reassigned after construction "
+                    f"(validation runs only in __init__); build a new ArrayLikelihood.")
         self.__dict__[name] = value
+
+    def build(self, names=('logL', 'clogL', 'conditional')):
+        """Materialize the named frontends now, outside any JAX trace.
+        Skips frontends this model does not support."""
+        return _build_frontends(self, names)
 
     def _freeze_reference(self, Phi):
         """Thin top layer: evaluate a GP level's prior covariance Phi at the
@@ -732,6 +783,25 @@ class ArrayLikelihood(summary.SummaryMixin):
             vsm.P_ref = self._freeze_reference(commongp.Phi)
 
         return vsm, ys
+
+    @functools.cached_property
+    def gsm(self):
+        """Outer GlobalWoodburyKernel when a NoiseMatrix globalgp is present.
+
+        Cached so `_invalidate` drops it with the other assemblies; tests and
+        the fused refdelta path read `.gsm.P_ref`. Returns None when this
+        likelihood has no such outer kernel (so `getattr(m, 'gsm', None)` stays
+        meaningful for commongp-only recipes).
+        """
+        if self.globalgp is None or self.commongp is None:
+            return None
+        if not isinstance(self.globalgp.Phi, metamath.NoiseMatrix):
+            return None
+        vsm, _ = self._marginal_assembly
+        gsm = metamath.GlobalWoodburyKernel(vsm, self.globalgp.Fs, self.globalgp.Phi)
+        if self.reference is not None:
+            gsm.P_ref = self._freeze_reference(self.globalgp.Phi)
+        return gsm
 
     @functools.cached_property
     def _coefficient_assembly(self):
@@ -932,18 +1002,13 @@ class ArrayLikelihood(summary.SummaryMixin):
         if self.globalgp is None:
             loglike = ffunc(vsm.make_kernelproduct(ys))
         else:
-            if isinstance(self.globalgp.Phi, metamath.NoiseMatrix):
-                self.gsm = metamath.GlobalWoodburyKernel(vsm, self.globalgp.Fs, self.globalgp.Phi)
-
-                # reference+delta opt-in: freeze the outer (globalgp) prior too.
-                # With both inner (vsm.P_ref, attached by _marginal_assembly) and
-                # outer references present the fused kernel routes to the
-                # two-level refdelta twins.
-                if self.reference is not None:
-                    self.gsm.P_ref = self._freeze_reference(self.globalgp.Phi)
-
-                loglike = ffunc(self.gsm.make_kernelproduct(ys))
+            gsm = self.gsm
+            if gsm is not None:
+                # reference+delta opt-in: gsm.P_ref is attached by the
+                # cached gsm builder when reference= is set.
+                loglike = ffunc(gsm.make_kernelproduct(ys))
             else:
+                raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
                 P_var_inv = self.globalgp.Phi_inv or self.globalgp.Phi.make_inv()
                 kterms = vsm.make_kernelterms(ys, self.globalgp.Fs)
 
@@ -991,6 +1056,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         return loglike
 
     def cglogL(self, cgmaxiter=100, make_logdet='CG-MDL', detmatvecs=5, detsamples=200, clip=None):
+        raise NotImplementedError(_METAMATH_KERNELTERMS_UNAVAILABLE)
         vsm, ys = self._marginal_assembly
 
         if self.globalgp is None:

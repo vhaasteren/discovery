@@ -34,15 +34,7 @@ from . import utils as kh
 from . import _kernels
 
 
-def bake_dtype():
-    """Float dtype for construction-time products (G0, b0, E0, conditioner
-    precisions): float64 whenever x64 is enabled, independent of
-    `utils.working_dtype()`. A float32 *sampling* configuration must never
-    degrade a baked constant: `W^T N0^-1 W` through the timing-model Woodbury
-    loses ~1e-5 relative accuracy in float32 (far worse under TF32 GPU matmul),
-    which makes G0 indefinite and the transport factorization NaN once the
-    prior precision drops below |lambda_min(G0)|."""
-    return kh.jnp.float64 if kh.jax.config.x64_enabled else kh.jnp.float32
+bake_dtype = kh.bake_dtype
 
 
 def _as_bake(a):
@@ -399,7 +391,7 @@ def reference_noise(psr):
     EQUAD/ECORR. The dependency-free default."""
     n0 = np.asarray(psr.toaerrs, dtype=np.float64) ** 2
     kernel = metamath.NoiseMatrix(kh.jnparray(n0))
-    f = metamatrix.func(kernel.make_solve)
+    f = metamatrix.func(kernel.make_solve, working=bake_dtype())
     return _FrozenSolve(lambda rhs: f(rhs, params={}),
                         f"toaerrs diagonal ({psr.name})",
                         diagonal=n0)
@@ -1316,12 +1308,12 @@ class MarginalTransport:
         self._ntoa = int(W.shape[0])
         self.center = bool(center)
         self._kernel = kernel
-        self._W = kh.jnparray(W)
-        self._y = kh.jnparray(y)
+        self._W = _as_bake(W)
+        self._y = _as_bake(y)
 
-        self._ks = make_ks(self._y, self._W)               # (W^T C^-1 y, W^T C^-1 W)
+        self._ks = make_ks(self._y, self._W, working=bake_dtype())  # (W^T C^-1 y, W^T C^-1 W)
         # Live solve for the residual quadratic (NOT frozen at a snapshot).
-        self._live_solve = metamatrix.func(kernel.make_solve)
+        self._live_solve = metamatrix.func(kernel.make_solve, working=bake_dtype())
         self.params = sorted(
             set(self._ks.params) | set(block.conditioner_precision.params))
 

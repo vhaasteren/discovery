@@ -3,6 +3,7 @@ import numpy as np
 from .. import matrix
 from .. import signals
 from .. import likelihood
+from .. import _kernels
 
 priordict_standard = {
     "(.*_)?efac": [0.9, 1.1],
@@ -68,12 +69,14 @@ def _makegps(psr, Tred):
 
 # single-pulsar noise analysis for EPTA DR2new+. No exponential dips
 def makemodel_singlepulsar(psr):
+    _kernels.require_matrix("discovery.models.epta.makemodel_singlepulsar")
     return likelihood.PulsarLikelihood([psr.residuals,
                                         signals.makenoise_measurement(psr, psr.noisedict),
                                         signals.makegp_timing(psr)] + _makegps(psr, Tred=signals.getspan(psr)))
 
 # CURN model for EPTA DR2new+. No exponential dips
 def makemodel_curn(psrs, crn_components=30, array=False):
+    _kernels.require_matrix("discovery.models.epta.makemodel_curn")
     tspan = signals.getspan(psrs)
 
     if array:
@@ -100,6 +103,7 @@ def makemodel_curn(psrs, crn_components=30, array=False):
 
 # HD model for EPTA DR2new+. No exponential dips
 def makemodel_hd(psrs, gw_components=30, array=False):
+    _kernels.require_matrix("discovery.models.epta.makemodel_hd")
     tspan = signals.getspan(psrs)
 
     if array:

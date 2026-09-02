@@ -21,29 +21,29 @@ stay live.
 
 You almost never touch the graph layer directly. User-facing factories
 (`makegp_*`, `makenoise_measurement`, recipes, likelihoods) build models the
-same way as before. The default backend is the graph path (**metamath**).
+same way as before. The graph path (**metamath**) is fully functional and
+opt-in; the default backend remains the legacy closure path (**matrix**).
 
 ## Defaults and the kernel switch
 
-At import time Discovery selects the graph backend:
+At import time Discovery selects the legacy closure backend:
 
 ```python
 import discovery as ds
-assert ds.config() == "metamath"   # default
+assert ds.config() == "matrix"   # default
 ```
 
-To force the legacy closure path (reference implementation, still maintained
-for comparison and rollback):
-
-```python
-ds.config(kernels="matrix")
-# build models *after* this call
-```
-
-To switch back:
+To use the graph path, select it **before** constructing models:
 
 ```python
 ds.config(kernels="metamath")
+# build models *after* this call
+```
+
+To force the legacy path explicitly (or roll back after selecting metamath):
+
+```python
+ds.config(kernels="matrix")
 ```
 
 Notes:
@@ -405,7 +405,7 @@ is certified for that topology.
 
 | Topic | Status |
 |---|---|
-| Dual backends | Both `matrix` and `metamath` selectable; default `metamath`. |
+| Dual backends | Both `matrix` and `metamath` selectable; default `matrix`. Metamath is opt-in via `ds.config(kernels="metamath")`. |
 | Multi-ExtSignal `clogL` cross form | Incomplete cross-terms; use `clogl_form="residual"` ([#137](https://github.com/nanograv/discovery/issues/137)). |
 | `cglogL` | Not currently runnable on either backend (missing optional deps + incomplete API). Do not rely on it. |
 | Chained multi-GP `clogL` on matrix route | Builds with `marginalize_all_but_last=True` but coefficient likelihood evaluates reliably only under `kernels='metamath'`. |
@@ -417,9 +417,9 @@ is certified for that topology.
 ```python
 import discovery as ds
 
-ds.config()                          # 'metamath'
-ds.config(kernels='matrix')          # legacy path
-ds.config(kernels='metamath')        # graph path (default)
+ds.config()                          # 'matrix'
+ds.config(kernels='matrix')          # legacy path (default)
+ds.config(kernels='metamath')        # graph path (opt-in)
 
 al = ds.ArrayLikelihood(
     psls,
