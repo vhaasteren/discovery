@@ -132,6 +132,8 @@ def packed_clogl_ineligibility(model):
         reasons.append("a commongp coefficient assembly is required")
     if getattr(model, "clogl_form_resolved", None) != "cross":
         reasons.append("clogL must resolve to cross form (frozen noise)")
+    if getattr(model, "decenter_params0", None) is not None:
+        reasons.append("class-tracked white noise is not supported")
     if not model.decenter and model.transport is None:
         reasons.append("an ArrayTransport/decenter transform is required")
     if model.transform is not None:
@@ -178,6 +180,10 @@ def packed_clogl_ineligibility(model):
         if transport.origin != "conditional_mode":
             reasons.append(
                 'the ArrayTransport must use origin="conditional_mode"')
+        if getattr(transport, "_tracking", None) is not None:
+            reason = "class-tracked white noise is not supported"
+            if reason not in reasons:
+                reasons.append(reason)
 
     if model.globalgp is not None:
         if getattr(model.globalgp, "means", None) is not None:

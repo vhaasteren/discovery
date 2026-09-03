@@ -1934,6 +1934,24 @@ def test_class_tracking_with_origin_extsignals_raises(psrs, metamath_backend):
             origin_extsignals=[es], psr_slot=0)
 
 
+def test_arraylikelihood_decenter_params0_with_extsignals_raises(
+        psrs, metamath_backend):
+    """Sugar must refuse at ArrayLikelihood construction, not inside Transport."""
+    p0 = {}
+    for p in psrs:
+        p0.update(_wn_params0(p))
+    es = _FakeExtSignal(
+        [np.random.default_rng(0).standard_normal((len(p.residuals), 2))
+         for p in psrs],
+        2, name="cw")
+    with pytest.raises(NotImplementedError,
+                       match="decenter_params0.*extsignals"):
+        ds.ArrayLikelihood(
+            [_psl_freewn(p) for p in psrs],
+            commongp=_commongp(psrs), decenter=True,
+            decenter_params0=p0, extsignals=[es])
+
+
 def test_arraylikelihood_decenter_params0_tracks_free_white_noise(psrs, metamath_backend):
     p0 = {}
     for p in psrs:
@@ -1951,9 +1969,9 @@ def test_arraylikelihood_decenter_params0_tracks_free_white_noise(psrs, metamath
     out = clogl(pp)
     logp = float(out[0]) if isinstance(out, tuple) else float(out)
     assert np.isfinite(logp)
-    # packed clogL needs the cross form (frozen noise): loud failure, not silent
+    # packed clogL needs frozen noise: loud failure, not silent
     from discovery.packed import PackedClogLUnsupported
-    with pytest.raises(PackedClogLUnsupported, match="cross"):
+    with pytest.raises(PackedClogLUnsupported, match="class-tracked"):
         model.make_packed_clogL()
     with pytest.raises(ValueError, match="decenter_params0"):
         ds.ArrayLikelihood([_psl_freewn(p) for p in psrs], commongp=_commongp(psrs),

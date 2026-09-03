@@ -276,7 +276,7 @@ G_0 &= W^\top N_0^{-1} W, \quad
 b_0 = W^\top N_0^{-1} r_0, \\
 A(\theta) &= G_0 + \mathrm{diag}(p(\theta)), \\
 q &= \mu + L^{-\top}\xi, \quad A = LL^\top, \\
-\mu &= A^{-1}b_0\ \text{(if center)}, \quad
+\mu &= A^{-1}b_0\ \text{(if origin="conditional\_mode")}, \quad
 \mathrm{ldJ} = -\sum_i \log L_{ii}.
 \end{aligned}
 $$
@@ -291,6 +291,21 @@ $E_{0,e}=W^\top N_0^{-1}F_{\mathrm{ext},e}$ baked at construction.
 $\mu$ is a translation in $\xi$ ($d\mu/d\xi=0$); `ldJ` is unchanged.
 `ArrayTransport` stacks $E_{0,e}$ to shape $(N_p,k,k_e)$ and uses
 `einsum('ijk,ik->ij', ...)`.
+
+When EFAC/EQUAD/ECORR are sampled, frozen $G_0$ is a funnel.
+`class_tracking` (see `classgram.py`) keeps the frozen operator for
+construction-time $G_0$, $b_0$, probes, and fingerprint, and replaces the
+per-evaluation $(G, b)$ with the exact Gram of a class-quantized white-noise
+model: EFAC exact, ECORR exact, EQUAD approximate inside a baked
+$\log_{10}\mathrm{toaerr}^2$ class. Sugar:
+`ArrayLikelihood(..., decenter=True, decenter_params0=noisedict)`.
+
+`class_tracking` with `origin_extsignals` is refused (`NotImplementedError`):
+$E_0$ is still formed from frozen $N_0$ while $b$ tracks. Form $E_0$ through
+the `ClassGram` before enabling. The sugar refuses the same combination at
+`ArrayLikelihood` construction (`decenter_params0` + `extsignals`);
+`Transport` still refuses the explicit `origin_extsignals` path. Frozen-noise
+ExtSignal centering is unchanged.
 
 ### 8.3 Conditioner precision contract
 
@@ -310,11 +325,13 @@ precisions raise at construction; live callables are checked in `validate`.
   `fingerprint`, optional ExtSignal centering and `softclip`.
 - `ArrayTransport` — batched equal-width transports (ragged is unsupported).
   Batches ExtSignal centering (all-or-none, shared `coeffs` identity).
-  Still rejects `softclip`.
+  Still rejects `softclip`. All-or-none `class_tracking` (zero-padded stacks).
 - `MarginalTransport` — one external block whitened against **live** marginalized
   $C(\eta)$ via `kernel.make_kernelsolve(y_t, W_s)` (no duplicated TNT path).
   Metamath-only. Schema string `discovery-marginal-transport-v1` in fingerprint.
-- Reference noise: `reference_noise`, `reference_noise_frozen`; probes
+- Reference noise: `reference_noise`, `reference_noise_frozen`,
+  `class_tracking` / `ClassTracking` (public marker; frozen `.solve` plus a
+  baked `ClassGram`); probes
   `reference_noise_quadratic`, `reference_noise_standard_deviation`.
 - Live-kernel probes on `MarginalTransport`: `live_kernel_quadratic`,
   `live_kernel_standard_deviation` (Woodbury-stack diagonal walk; projection
@@ -328,7 +345,7 @@ meaning.
 
 | Stage | Behaviour |
 |---|---|
-| Construction | Raise on bad shapes, multi-key blocks, metamath guard, incomplete frozen noise for `decenter=True` sugar |
+| Construction | Raise on bad shapes, multi-key blocks, metamath guard, incomplete frozen noise for `decenter=True` sugar. `class_tracking` + `origin_extsignals` (and `decenter_params0` + `extsignals`) → `NotImplementedError` |
 | `validate(params)` | Eager PD / positivity; returns diagnostics dict on success |
 | Runtime `apply` | NaN-propagating under JIT |
 

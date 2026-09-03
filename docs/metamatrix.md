@@ -220,17 +220,20 @@ al = ds.ArrayLikelihood(
 Requirements for `decenter=True`:
 
 - A `commongp` must be present.
-- White noise must be **fixed** at construction (frozen reference noise). If EFAC
-  etc. are free, construction raises with a clear message — build an explicit
-  `Transport` instead (below).
+- White noise must be **fixed** at construction (frozen reference noise),
+  or pass `decenter_params0=noisedict` to class-track it. If EFAC etc. are
+  free and `decenter_params0` is omitted, construction raises — pass the
+  bake point, or build an explicit `Transport` (below).
 - Mutually exclusive with `transport=...`.
+- `decenter_params0` cannot be combined with `extsignals=` (class-tracking
+  × ExtSignal centering is refused; see below).
 
-When `extsignals=` is also set, `decenter=True` subtracts those deterministic
-signals from the centering residual (the Fourier coefficients are centered on
-the ExtSignal-subtracted data). The Jacobian does not depend on ExtSignal
-parameters. An explicit `transport=` is caller-owned and is not rewritten
-from `extsignals`. `transport=` is metamath-only (`likelihood.py` has no
-such argument).
+When `extsignals=` is also set (without `decenter_params0`), `decenter=True`
+subtracts those deterministic signals from the centering residual (the
+Fourier coefficients are centered on the ExtSignal-subtracted data). The
+Jacobian does not depend on ExtSignal parameters. An explicit `transport=`
+is caller-owned and is not rewritten from `extsignals`. `transport=` is
+metamath-only (`likelihood.py` has no such argument).
 
 ### Explicit transport
 
@@ -259,6 +262,7 @@ al = ds.ArrayLikelihood(psls, commongp=commongp, transport=t,
 `ArrayTransport` batches ExtSignal centering when every per-pulsar `Transport`
 was built with the same `origin_extsignals` list and `psr_slot=i`. It still
 rejects `softclip`. Explicit `transport=` is metamath-only.
+`class_tracking` cannot be combined with `origin_extsignals` (see below).
 
 ### Varying white noise: class-tracked reference
 
@@ -293,6 +297,17 @@ class/dense-row counts and the bake-point digest. The chart is a coordinate
 choice: it never changes the posterior, only the sampler's efficiency.
 `make_packed_clogL` requires frozen noise and refuses a tracked model.
 
+`class_tracking` with `origin_extsignals` raises `NotImplementedError`.
+ExtSignal centering still bakes \(E_0 = W^\top N_0^{-1} F_{\mathrm{ext}}\)
+from the **frozen** reference, while tracking makes
+\(b = W^\top N(\theta)^{-1} r_0\) live; mixing them silently shifts the
+centering translation. The sugar refuses the same combination at
+`ArrayLikelihood` construction (`decenter=True`, `decenter_params0=...`,
+`extsignals=...`). Form \(E_0\) through the tracked operator before
+enabling this; that is not in this PR. Frozen-noise ExtSignal centering
+(`decenter=True` without `decenter_params0`, or an explicit frozen
+transport) is unchanged.
+
 Helpers:
 
 | API | Role |
@@ -311,6 +326,8 @@ Failure semantics (user-visible):
 
 - Construction and `validate(params)` raise on bad shapes / non-PD conditioners.
 - Runtime `apply` under JAX is NaN-propagating (no silent floors on prior precision).
+- `class_tracking` + `origin_extsignals` (and the `decenter_params0` +
+  `extsignals` sugar) raise `NotImplementedError`.
 
 Recipes that wrap common decenter patterns live in `discovery.recipes`
 (`decenter_intrinsic_rn`, `decenter_intrinsic_rn_global_hd`,

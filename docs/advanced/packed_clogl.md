@@ -84,6 +84,7 @@ v1 requires all of:
 - resolved `clogl_form == "cross"` (frozen measurement noise);
 - a centered `ArrayTransport` (`decenter=True` or an explicit transport);
 - equal per-pulsar coefficient row widths;
+- no class-tracked white noise (`decenter_params0` / `class_tracking`);
 - no user transform after the transport, no `reference` / `refdelta`,
   no live pulsar delays, no GP prior means;
 - if a `globalgp` is present, it must carry a separable Fourier prior
@@ -92,8 +93,8 @@ v1 requires all of:
 - ExtSignals, if any, must have a fixed per-pulsar basis (no live /
   evolving TOA-space CW).
 
-Residual form, free EFAC/EQUAD/ECORR, and live-basis deterministic
-signals stay on `model.clogL`.
+Residual form, free EFAC/EQUAD/ECORR, class-tracked white noise, and
+live-basis deterministic signals stay on `model.clogL`.
 
 ## Layout
 

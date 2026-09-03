@@ -638,6 +638,14 @@ class ArrayLikelihood(summary.SummaryMixin):
                 "ArrayLikelihood: decenter_params0 is the white-noise bake point "
                 "for decenter=True; it cannot be combined with transport= or "
                 "decenter=False")
+        if decenter_params0 is not None and extsignals:
+            raise NotImplementedError(
+                "ArrayLikelihood: decenter_params0 (class_tracking) with "
+                "extsignals is not supported: the ExtSignal centering term "
+                "E0 = W^T N0^{-1} F_ext is formed from the frozen reference "
+                "noise, while tracking makes b = W^T N(theta)^{-1} r0 live — "
+                "the mixed centering translation is silently wrong. Form E0 "
+                "through the tracked operator before enabling this combination.")
         if (decenter or transport is not None) and commongp is None:
             raise ValueError(
                 "ArrayLikelihood: decenter/transport requires a commongp "
@@ -838,8 +846,10 @@ class ArrayLikelihood(summary.SummaryMixin):
 
         When this likelihood has `extsignals`, they are passed as
         `origin_extsignals` so the centering translation subtracts the
-        deterministic signal. An explicit `transport=` is caller-owned and
-        is not modified here.
+        deterministic signal. That combination is refused with
+        `decenter_params0` (`class_tracking` with `origin_extsignals`);
+        `__init__` raises before this builder runs. An explicit `transport=`
+        is caller-owned and is not modified here.
 
         `reference_noise_frozen(psl.N, params0={})` RAISES when the per-pulsar
         kernel has free parameters, converting the old closure's silent

@@ -488,10 +488,6 @@ class ClassTracking(_FrozenSolve):
         return cg
 
 
-# backwards-compatible private alias (the public marker is ClassTracking)
-_ClassTracking = ClassTracking
-
-
 def class_tracking(kernel, params0, *, toaerrs, sigma_bin_dex=0.2,
                    dense_threshold=16, validate=True, description=None):
     """Reference noise that tracks white-noise parameters in the transport.
