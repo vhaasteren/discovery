@@ -166,7 +166,7 @@ def _globalgp(psrs, components=5):
                                    name="gw")
 
 
-def _transport_for(psr, psrs, i, *, center=True, extra_globalgp=None):
+def _transport_for(psr, psrs, i, *, origin="conditional_mode", extra_globalgp=None):
     gp = _commongp(psrs)
     blocks = [tr.gp_block(gp, psr_slot=i)]
     if extra_globalgp is not None:
@@ -174,20 +174,21 @@ def _transport_for(psr, psrs, i, *, center=True, extra_globalgp=None):
     return tr.Transport(
         blocks,
         reference_noise=tr.reference_noise(psr),
-        reference_residual=np.asarray(psr.residuals) if center else None,
-        center=center)
+        reference_residual=(np.asarray(psr.residuals)
+                            if origin == "conditional_mode" else None),
+        origin=origin)
 
 
 # ==========================================================================
 # 2. Jacobian
 # ==========================================================================
 
-@pytest.mark.parametrize("center", [False, True])
-def test_jacobian_matches_returned_ldJ(psr, metamath_backend, center):
+@pytest.mark.parametrize("origin", ["zero", "conditional_mode"])
+def test_jacobian_matches_returned_ldJ(psr, metamath_backend, origin):
     """jac slogdet of xi -> q equals the returned ldJ (rtol=1e-10), with and
     without centering (centering is a translation and must not change ldJ)."""
     psrs = [psr]
-    t = _transport_for(psr, psrs, 0, center=center)
+    t = _transport_for(psr, psrs, 0, origin=origin)
     params = ds.sample_uniform(t.params)
 
     def q_of_xi(xi):
@@ -270,7 +271,7 @@ def test_anti_ridge_whitening_at_exact_precision_only(metamath_backend):
 
     def transport(precision):
         return tr.Transport([_const_block(w, [precision], name="s")],
-                            reference_noise=ref, center=False)
+                            reference_noise=ref, origin="zero")
 
     # exact conditioner -> whitened.
     A_exact = _one_by_one_A(transport(p_true))
@@ -299,7 +300,7 @@ def test_diagnostics_metric_reports_reference_noise_mismatch(metamath_backend):
     p = 3.0
 
     t = tr.Transport([_const_block(w, [p], name="s")],
-                     reference_noise=_unit_column_ref(n_toa, 2.0), center=False)  # N0 = 2 I
+                     reference_noise=_unit_column_ref(n_toa, 2.0), origin="zero")  # N0 = 2 I
 
     # true noise N = I  ->  lambda = 1, lambda0 = 1/2
     def true_solve(rhs):
@@ -388,7 +389,7 @@ def test_zero_column_basis_raises_naming_indices(psr, metamath_backend):
 
 def test_empty_block_list_raises(psr, metamath_backend):
     with pytest.raises(ValueError, match="at least one block"):
-        tr.Transport([], reference_noise=_diag_ref(psr), center=False)
+        tr.Transport([], reference_noise=_diag_ref(psr), origin="zero")
 
 
 def test_multi_key_block_index_raises(psr, metamath_backend):
@@ -400,7 +401,7 @@ def test_multi_key_block_index_raises(psr, metamath_backend):
     bad = tr.TransportBlock("b", F, {"a(1)": slice(0, 1), "b(1)": slice(0, 1)},
                             cond)
     with pytest.raises(ValueError, match="exactly one coefficient key"):
-        tr.Transport([bad], reference_noise=_diag_ref(psr), center=False)
+        tr.Transport([bad], reference_noise=_diag_ref(psr), origin="zero")
 
 
 def test_duplicate_coefficient_key_across_blocks_raises(psr, metamath_backend):
@@ -408,7 +409,7 @@ def test_duplicate_coefficient_key_across_blocks_raises(psr, metamath_backend):
     b1 = _const_block(F, [1.0], name="dup")
     b2 = _const_block(F, [1.0], name="dup")
     with pytest.raises(ValueError, match="duplicate coefficient key"):
-        tr.Transport([b1, b2], reference_noise=_diag_ref(psr), center=False)
+        tr.Transport([b1, b2], reference_noise=_diag_ref(psr), origin="zero")
 
 
 def test_non_localized_slice_raises(psr, metamath_backend):
@@ -419,7 +420,7 @@ def test_non_localized_slice_raises(psr, metamath_backend):
     cond.params = []
     bad = tr.TransportBlock("b", F, {"b_coefficients(1)": slice(3, 4)}, cond)
     with pytest.raises(ValueError, match="localized to slice"):
-        tr.Transport([bad], reference_noise=_diag_ref(psr), center=False)
+        tr.Transport([bad], reference_noise=_diag_ref(psr), origin="zero")
 
 
 def test_ntoa_mismatch_raises(psr, metamath_backend):
@@ -428,14 +429,14 @@ def test_ntoa_mismatch_raises(psr, metamath_backend):
     with pytest.raises(ValueError, match="disagree on n_toa"):
         tr.Transport([_const_block(F1, [1.0], name="a"),
                       _const_block(F2, [1.0], name="b")],
-                     reference_noise=_diag_ref(psr), center=False)
+                     reference_noise=_diag_ref(psr), origin="zero")
 
 
-def test_center_true_without_residual_raises(psr, metamath_backend):
+def test_mode_origin_without_residual_raises(psr, metamath_backend):
     F = np.asarray(psr.residuals)[:, None]
-    with pytest.raises(ValueError, match="center=True requires reference_residual"):
+    with pytest.raises(ValueError, match="requires reference_residual"):
         tr.Transport([_const_block(F, [1.0])], reference_noise=_diag_ref(psr),
-                     center=True)
+                     origin="conditional_mode")
 
 
 def test_frozen_kernel_with_free_params_lists_missing(psr, metamath_backend):
@@ -464,7 +465,7 @@ def test_reference_noise_diagonal_quadratic_and_std(psr, metamath_backend):
 
     F = np.asarray(psr.residuals)[:, None]
     transport = tr.Transport(
-        [_const_block(F, [1.0])], reference_noise=ref, center=False)
+        [_const_block(F, [1.0])], reference_noise=ref, origin="zero")
     n_toa = n0.shape[0]
     v = np.linspace(-1.0, 1.0, n_toa) * 1e-6
     assert np.isclose(float(transport.reference_noise_quadratic(v)),
@@ -500,7 +501,7 @@ def test_frozen_measurement_reference_diagonal_is_finite_positive(
 
     F = np.asarray(psr.residuals)[:, None]
     transport = tr.Transport(
-        [_const_block(F, [1.0])], reference_noise=ref, center=False)
+        [_const_block(F, [1.0])], reference_noise=ref, origin="zero")
     std = np.asarray(transport.reference_noise_standard_deviation())
     assert np.allclose(std, np.sqrt(diag))
     v = np.linspace(-1.0, 1.0, n_toa) * 1e-6
@@ -531,7 +532,7 @@ def test_matrix_mode_transport_construction_raises(psr):
         F = np.asarray(psr.residuals)[:, None]
         with pytest.raises(NotImplementedError, match="metamath kernel path"):
             tr.Transport([_const_block(F, [1.0])], reference_noise=_diag_ref(psr),
-                         center=False)
+                         origin="zero")
     finally:
         ds.config(kernels="matrix")
 
@@ -539,7 +540,7 @@ def test_matrix_mode_transport_construction_raises(psr):
 def test_validate_negative_precision_raises_with_local_indices(psr, metamath_backend):
     F = np.asarray(psr.residuals)[:, None] * np.array([[1.0, 1.0]])
     t = tr.Transport([_const_block(F, [1.0, -2.0], name="neg")],
-                     reference_noise=_diag_ref(psr), center=False)
+                     reference_noise=_diag_ref(psr), origin="zero")
     with pytest.raises(ValueError, match=r"negative.*\[1\]"):
         t.validate({})
 
@@ -553,13 +554,13 @@ def test_validate_rank_deficient_basis_with_zero_precision_fails_pd(psr, metamat
     c0 = np.asarray(psr.residuals)[:, None]
     F = np.concatenate([c0, 2.0 * c0], axis=1)
     t = tr.Transport([_const_block(F, [0.0, 0.0], name="rank")],
-                     reference_noise=_diag_ref(psr), center=False)
+                     reference_noise=_diag_ref(psr), origin="zero")
     with pytest.raises(ValueError, match="not positive definite"):
         t.validate({})
 
     # a strictly positive diagonal precision restores PD.
     t_pd = tr.Transport([_const_block(F, [1e-3, 1e-3], name="rank")],
-                        reference_noise=_diag_ref(psr), center=False)
+                        reference_noise=_diag_ref(psr), origin="zero")
     t_pd.validate({})   # does not raise
 
 
@@ -588,8 +589,8 @@ def test_array_transport_unequal_dimensions_raises(psrs, metamath_backend):
 
 
 def test_array_transport_mixed_centering_raises(psrs, metamath_backend):
-    a = _transport_for(psrs[0], psrs, 0, center=True)
-    b = _transport_for(psrs[1], psrs, 1, center=False)
+    a = _transport_for(psrs[0], psrs, 0, origin="conditional_mode")
+    b = _transport_for(psrs[1], psrs, 1, origin="zero")
     with pytest.raises(ValueError, match="all-or-none centering"):
         tr.ArrayTransport([a, b])
 
@@ -637,7 +638,7 @@ def test_inverse_map_round_trip_and_shared_target(psr, metamath_backend):
 
     def build(ref):
         return tr.Transport([tr.gp_block(gp, psr_slot=0)], reference_noise=ref,
-                            center=False)
+                            origin="zero")
 
     t_diag = build(tr.reference_noise(psr))
     t_frozen = build(tr.reference_noise_frozen(
@@ -647,7 +648,7 @@ def test_inverse_map_round_trip_and_shared_target(psr, metamath_backend):
 
     for t in (t_diag, t_frozen):
         cf, _ = t._factor(params)
-        # xi = L^T (q - mu); here center=False so mu=0
+        # xi = L^T (q - mu); here origin="zero" so mu=0
         xi = np.asarray(cf[0]).T @ np.asarray(q_phys)
         q_back, _ = t.apply(params, kh.jnparray(xi))
         np.testing.assert_allclose(np.asarray(q_back), np.asarray(q_phys), rtol=1e-8)
@@ -696,7 +697,7 @@ def test_free_efac_via_explicit_transport_evaluates_finitely(psrs, metamath_back
         per_psr.append(tr.Transport(
             [tr.gp_block(_commongp(psrs), psr_slot=i)],
             reference_noise=tr.reference_noise(p),
-            reference_residual=np.asarray(p.residuals), center=True))
+            reference_residual=np.asarray(p.residuals), origin="conditional_mode"))
     at = tr.ArrayTransport(per_psr)
 
     model = ds.ArrayLikelihood([_psl_freewn(p) for p in psrs],
@@ -722,7 +723,7 @@ def test_legal_extreme_still_factorizes(psrs, metamath_backend):
     """validate passes at a nominal draw; then a draw that drives the stochastic
     block's precision to a legal extreme (log10_A at its prior bound) still
     factorizes -- PD holds because the exact prior precision is present."""
-    t = _transport_for(psrs[0], psrs, 0, center=False)
+    t = _transport_for(psrs[0], psrs, 0, origin="zero")
 
     nominal = ds.sample_uniform(t.params)
     t.validate(nominal)                              # does not raise
@@ -804,22 +805,22 @@ def test_transport_fingerprint_is_stable_and_structural(psr, metamath_backend):
     ref = _diag_ref(psr)
 
     a = tr.Transport([_const_block(F, [1.0, 1.0], name="rn")],
-                     reference_noise=ref, center=False)
+                     reference_noise=ref, origin="zero")
     # Same structure -> identical fingerprint (independent of a params draw).
     b = tr.Transport([_const_block(F, [2.0, 3.0], name="rn")],
-                     reference_noise=ref, center=False)
+                     reference_noise=ref, origin="zero")
     assert a.fingerprint().startswith("sha256:")
     assert a.fingerprint() == b.fingerprint()
 
     # A different block name is a structural change -> different fingerprint.
     c = tr.Transport([_const_block(F, [1.0, 1.0], name="dm")],
-                     reference_noise=ref, center=False)
+                     reference_noise=ref, origin="zero")
     assert c.fingerprint() != a.fingerprint()
 
     # Different dimensionality -> different fingerprint.
     F1 = np.asarray(psr.residuals)[:, None] * np.array([[1.0]])
     d = tr.Transport([_const_block(F1, [1.0], name="rn")],
-                     reference_noise=ref, center=False)
+                     reference_noise=ref, origin="zero")
     assert d.fingerprint() != a.fingerprint()
 
 
@@ -896,8 +897,8 @@ def test_extsignal_subtracted_centering_matches_manual(psr, metamath_backend):
     ref = _diag_ref(psr)
 
     t = tr.Transport([tr.array_block(F, {"tim": slice(0, 3)}, 1.0, name="timing")],
-                     reference_noise=ref, reference_residual=r0, center=True,
-                     center_extsignals=[es], psr_slot=0)
+                     reference_noise=ref, reference_residual=r0, origin="conditional_mode",
+                     origin_extsignals=[es], psr_slot=0)
     assert set(["cw_c0", "cw_c1"]).issubset(set(t.params))
 
     params = {"cw_c0": 0.7, "cw_c1": -0.3}
@@ -909,7 +910,7 @@ def test_extsignal_subtracted_centering_matches_manual(psr, metamath_backend):
     E0 = F.T @ (Fext / n0[:, None])
     mu = np.linalg.solve(A, b0 - E0 @ np.array([0.7, -0.3]))
     assert np.allclose(np.asarray(q), mu)
-    assert t.diagnostics()["center_extsignals"] == ["cw"]
+    assert t.diagnostics()["origin_extsignals"] == ["cw"]
 
 
 def test_softclip_clamps_centering_slice(psr, metamath_backend):
@@ -920,7 +921,7 @@ def test_softclip_clamps_centering_slice(psr, metamath_backend):
     big = np.zeros_like(r0)
     big[0] = 1e6
     t = tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1e-10, name="timing")],
-                     reference_noise=ref, reference_residual=big, center=True,
+                     reference_noise=ref, reference_residual=big, origin="conditional_mode",
                      softclip={"timing": 4.0})
     q, _ = t.apply({}, kh.jnp.zeros(1))
     assert abs(float(np.asarray(q)[0])) <= 4.0 + 1e-9
@@ -930,13 +931,13 @@ def test_softclip_clamps_centering_slice(psr, metamath_backend):
 def test_softclip_and_extsignals_require_center(psr, metamath_backend):
     F = np.asarray(psr.residuals)[:, None]
     ref = _diag_ref(psr)
-    with pytest.raises(ValueError, match="softclip requires center"):
+    with pytest.raises(ValueError, match="softclip requires origin"):
         tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
-                     reference_noise=ref, center=False, softclip={"timing": 4.0})
+                     reference_noise=ref, origin="zero", softclip={"timing": 4.0})
     es = _FakeExtSignal([np.asarray(psr.residuals)[:, None]], 1)
-    with pytest.raises(ValueError, match="center_extsignals requires center"):
+    with pytest.raises(ValueError, match="origin_extsignals requires origin"):
         tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0)],
-                     reference_noise=ref, center=False, center_extsignals=[es])
+                     reference_noise=ref, origin="zero", origin_extsignals=[es])
 
 
 def test_softclip_unknown_block_raises(psr, metamath_backend):
@@ -945,7 +946,7 @@ def test_softclip_unknown_block_raises(psr, metamath_backend):
     with pytest.raises(ValueError, match="unknown block 'nope'"):
         tr.Transport([tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
                      reference_noise=ref, reference_residual=np.asarray(psr.residuals),
-                     center=True, softclip={"nope": 4.0})
+                     origin="conditional_mode", softclip={"nope": 4.0})
 
 
 def test_array_transport_rejects_softclip(psr, metamath_backend):
@@ -956,7 +957,7 @@ def test_array_transport_rejects_softclip(psr, metamath_backend):
         [tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=ref,
         reference_residual=r0,
-        center=True,
+        origin="conditional_mode",
         softclip={"timing": 4.0},
     )
     with pytest.raises(ValueError, match="does not support softclip"):
@@ -979,8 +980,8 @@ def test_array_transport_batches_extsignal_centering(psrs, metamath_backend):
             [tr.array_block(F, {"tim": slice(0, k)}, 1.0, name="timing")],
             reference_noise=_diag_ref(psr),
             reference_residual=r0,
-            center=True,
-            center_extsignals=[es],
+            origin="conditional_mode",
+            origin_extsignals=[es],
             psr_slot=i,
         )
         for i, (psr, r0, F) in enumerate(packs)
@@ -988,7 +989,7 @@ def test_array_transport_batches_extsignal_centering(psrs, metamath_backend):
     at = tr.ArrayTransport(transports)
 
     assert set(es.coeffs.params) <= set(at.params)
-    assert at.diagnostics()["center_extsignals"] == ["cw"]
+    assert at.diagnostics()["origin_extsignals"] == ["cw"]
 
     params = {"cw_c0": 0.7, "cw_c1": -0.3}
     xi = kh.jnp.zeros((npsr, k))
@@ -1021,15 +1022,15 @@ def test_array_transport_extsignals_all_or_none(psrs, metamath_backend):
         [tr.array_block(F0, {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=_diag_ref(psr0),
         reference_residual=r0,
-        center=True,
-        center_extsignals=[es],
+        origin="conditional_mode",
+        origin_extsignals=[es],
         psr_slot=0,
     )
     t1 = tr.Transport(
         [tr.array_block(F1, {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=_diag_ref(psr1),
         reference_residual=r1,
-        center=True,
+        origin="conditional_mode",
     )
     with pytest.raises(ValueError, match="all-or-none ExtSignal centering"):
         tr.ArrayTransport([t0, t1])
@@ -1047,16 +1048,16 @@ def test_array_transport_extsignals_require_shared_coeffs(psrs, metamath_backend
         [tr.array_block(F0, {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=_diag_ref(psr0),
         reference_residual=r0,
-        center=True,
-        center_extsignals=[es0],
+        origin="conditional_mode",
+        origin_extsignals=[es0],
         psr_slot=0,
     )
     t1 = tr.Transport(
         [tr.array_block(F1, {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=_diag_ref(psr1),
         reference_residual=r1,
-        center=True,
-        center_extsignals=[es1],
+        origin="conditional_mode",
+        origin_extsignals=[es1],
         psr_slot=1,
     )
     with pytest.raises(ValueError, match="same coeffs callable"):
@@ -1071,7 +1072,7 @@ def _two_psr_timing_transports(psrs, es, *, slots=None, extra_es=None):
         psr = psrs[i]
         r0 = np.asarray(psr.residuals, dtype=float)
         F = r0[:, None]
-        kwargs = dict(center=True, center_extsignals=[es] + (extra_es or []), psr_slot=sl)
+        kwargs = dict(origin="conditional_mode", origin_extsignals=[es] + (extra_es or []), psr_slot=sl)
         out.append(
             tr.Transport(
                 [tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
@@ -1095,8 +1096,8 @@ def test_array_transport_extsignals_name_mismatch(psrs, metamath_backend):
         [tr.array_block(F1, {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=_diag_ref(psrs[1]),
         reference_residual=np.asarray(psrs[1].residuals, dtype=float),
-        center=True,
-        center_extsignals=[es_b],
+        origin="conditional_mode",
+        origin_extsignals=[es_b],
         psr_slot=1,
     )
     with pytest.raises(ValueError, match="names disagree"):
@@ -1126,16 +1127,16 @@ def test_array_transport_extsignals_bad_slots(psrs, metamath_backend):
         [tr.array_block(r0[:, None], {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=_diag_ref(psrs[0]),
         reference_residual=r0,
-        center=True,
-        center_extsignals=[es0],
+        origin="conditional_mode",
+        origin_extsignals=[es0],
         psr_slot=0,
     )
     t1 = tr.Transport(
         [tr.array_block(r1[:, None], {"tim": slice(0, 1)}, 1.0, name="timing")],
         reference_noise=_diag_ref(psrs[1]),
         reference_residual=r1,
-        center=True,
-        center_extsignals=[es1],
+        origin="conditional_mode",
+        origin_extsignals=[es1],
         psr_slot=0,
     )
     with pytest.raises(ValueError, match="psr_slot=i"):
@@ -1166,8 +1167,8 @@ def test_transport_rejects_1d_extsignal_basis(psr, metamath_backend):
             [tr.array_block(F, {"tim": slice(0, 1)}, 1.0, name="timing")],
             reference_noise=_diag_ref(psr),
             reference_residual=r0,
-            center=True,
-            center_extsignals=[es],
+            origin="conditional_mode",
+            origin_extsignals=[es],
             psr_slot=0,
         )
 
@@ -1191,8 +1192,8 @@ def test_array_transport_sums_two_extsignals(psrs, metamath_backend):
             [tr.array_block(F, {"tim": slice(0, 3)}, 1.0, name="timing")],
             reference_noise=_diag_ref(psr),
             reference_residual=r0,
-            center=True,
-            center_extsignals=[esa, esb],
+            origin="conditional_mode",
+            origin_extsignals=[esa, esb],
             psr_slot=i,
         )
         for i, (psr, r0, F) in enumerate(trans)
@@ -1213,7 +1214,7 @@ def test_decenter_sugar_centers_extsignals(psrs, metamath_backend):
     assert cw_names
     assert cw_names <= set(at.params)
     assert cw_names <= set(at.as_reparam().params)
-    assert at.diagnostics()["center_extsignals"] == ["cw"]
+    assert at.diagnostics()["origin_extsignals"] == ["cw"]
 
 
 def test_decenter_sugar_without_extsignals_unchanged_params(psrs, metamath_backend):
@@ -1251,7 +1252,7 @@ def test_explicit_transport_does_not_absorb_likelihood_extsignals(psrs, metamath
                 [tr.gp_block(commongp, psr_slot=i)],
                 reference_noise=tr.reference_noise_frozen(psl.N, params0={}, description=f"n{i}"),
                 reference_residual=np.asarray(psl.y),
-                center=True,
+                origin="conditional_mode",
             )
         )
         # no center_extsignals
@@ -1297,7 +1298,7 @@ def test_apply_grad_log10_h0_is_the_centering_path(psrs, metamath_backend):
                 blocks,
                 reference_noise=tr.reference_noise_frozen(psl.N, params0={}, description=f"n{i}"),
                 reference_residual=np.asarray(ys[i]),
-                center=True,
+                origin="conditional_mode",
             )
         )
     at_bare = tr.ArrayTransport(per)
@@ -1459,7 +1460,7 @@ def test_marginal_transport_matches_dense_oracle(metamath_backend):
     W = rng.standard_normal((n, 3))
     y = rng.standard_normal(n)
     block, _ = _make_block(W)
-    t = tr.marginal_transport(toy["K"], y, block, center=True)
+    t = tr.marginal_transport(toy["K"], y, block, origin="conditional_mode")
 
     for _ in range(5):
         eta = _eta(toy["eta_names"], rng)
@@ -1477,7 +1478,7 @@ def test_marginal_transport_matches_dense_oracle(metamath_backend):
 
 
 def test_marginal_transport_jacobian_matches_ldj(metamath_backend):
-    """T-D2: jacfwd slogdet of z(xi) equals ldJ, center on and off."""
+    """T-D2: jacfwd slogdet of z(xi) equals ldJ, for both origins."""
     import jax.numpy as jnp
     rng = np.random.default_rng(1)
     toy = _build_toy_marginal(rng)
@@ -1485,8 +1486,9 @@ def test_marginal_transport_jacobian_matches_ldj(metamath_backend):
     W = rng.standard_normal((n, 3))
     block, _ = _make_block(W)
     eta = _eta(toy["eta_names"], rng)
-    for center in (True, False):
-        t = tr.marginal_transport(toy["K"], rng.standard_normal(n), block, center=center)
+    for origin in ("conditional_mode", "zero"):
+        t = tr.marginal_transport(toy["K"], rng.standard_normal(n), block,
+                                  origin=origin)
         jac = np.asarray(jax.jacfwd(lambda xi: t.apply(eta, xi)[0])(jnp.zeros(3)))
         _, sld = np.linalg.slogdet(jac)
         ldJ = float(t.apply(eta, jnp.zeros(3))[1])
@@ -1513,7 +1515,7 @@ def test_marginal_transport_centering_is_gls_solution(metamath_backend):
     W = rng.standard_normal((n, 3))
     y = rng.standard_normal(n)
     block, _ = _make_block(W)
-    t = tr.marginal_transport(toy["K"], y, block, center=True)
+    t = tr.marginal_transport(toy["K"], y, block, origin="conditional_mode")
     eta = _eta(toy["eta_names"], rng)
     WtCiW, WtCiy = _oracle_products(toy["n0"], toy["F_all"], toy["phi_of"](eta), W, y)
     gls = np.linalg.solve(WtCiW + np.eye(3), WtCiy)
@@ -1759,12 +1761,12 @@ def test_marginal_transport_baked_in_float64_under_float32_working(
     eta = _eta(toy["eta_names"], rng)
     xi = rng.standard_normal(3)
 
-    t64 = tr.marginal_transport(toy["K"], y, block, center=True)
+    t64 = tr.marginal_transport(toy["K"], y, block, origin="conditional_mode")
     _, b64, _ = t64._factor(eta)
     z64, ld64 = t64.apply(eta, xi)
 
     def build():
-        return tr.marginal_transport(toy["K"], y, block, center=True)
+        return tr.marginal_transport(toy["K"], y, block, origin="conditional_mode")
     t32 = _with_float32_working(build)
     _, b32, _ = t32._factor(eta)
     z32, ld32 = t32.apply(eta, xi)
@@ -1790,4 +1792,4 @@ def test_indefinite_reference_gram_raises_at_construction(psrs, metamath_backend
             return -np.asarray(rhs), 0.0
 
     with pytest.raises(ValueError, match="indefinite"):
-        tr.Transport([block], reference_noise=Flipped(), center=False)
+        tr.Transport([block], reference_noise=Flipped(), origin="zero")

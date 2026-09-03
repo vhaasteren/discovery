@@ -175,8 +175,9 @@ def packed_clogl_ineligibility(model):
     else:
         if layout.shape[0] != len(model.psls):
             reasons.append("coefficient rows do not match pulsar count")
-        if not transport.center:
-            reasons.append("the ArrayTransport must be centered")
+        if transport.origin != "conditional_mode":
+            reasons.append(
+                'the ArrayTransport must use origin="conditional_mode"')
 
     if model.globalgp is not None:
         if getattr(model.globalgp, "means", None) is not None:

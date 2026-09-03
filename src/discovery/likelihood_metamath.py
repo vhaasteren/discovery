@@ -832,8 +832,8 @@ class ArrayLikelihood(summary.SummaryMixin):
                     psl.N, params0={},
                     description=f"frozen per-pulsar kernel "
                                 f"({getattr(psl, 'name', f'psl[{i}]')})"),
-                reference_residual=ys[i], center=True,
-                center_extsignals=ext, psr_slot=i))
+                reference_residual=ys[i], origin="conditional_mode",
+                origin_extsignals=ext, psr_slot=i))
         conditioners = [_tr.gp_array_conditioner(gp) for gp in cgp_list]
         if self.globalgp is not None:
             conditioners.append(
