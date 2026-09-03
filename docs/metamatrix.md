@@ -247,8 +247,8 @@ for i, psl in enumerate(psls):
         blocks,
         reference_noise=tr.reference_noise_frozen(psl.N, params0={}),
         reference_residual=psl.y,
-        center=True,
-        center_extsignals=extsignals,   # same list on every pulsar
+        origin="conditional_mode",
+        origin_extsignals=extsignals,   # same list on every pulsar
         psr_slot=i,
     ))
 t = tr.ArrayTransport(per)
@@ -257,7 +257,7 @@ al = ds.ArrayLikelihood(psls, commongp=commongp, transport=t,
 ```
 
 `ArrayTransport` batches ExtSignal centering when every per-pulsar `Transport`
-was built with the same `center_extsignals` list and `psr_slot=i`. It still
+was built with the same `origin_extsignals` list and `psr_slot=i`. It still
 rejects `softclip`. Explicit `transport=` is metamath-only.
 
 ### Varying white noise: class-tracked reference
@@ -274,7 +274,8 @@ tens of ms for the exact Gram.
 
 ```python
 ref = tr.class_tracking(psl.white_noise_kernel, params0=noisedict, toaerrs=psr.toaerrs)
-t = tr.Transport(blocks, reference_noise=ref, reference_residual=psl.y, center=True)
+t = tr.Transport(blocks, reference_noise=ref, reference_residual=psl.y,
+                 origin="conditional_mode")
 ```
 
 or, for the sugar, `ds.ArrayLikelihood(psls, commongp=..., decenter=True,

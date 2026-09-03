@@ -16,8 +16,16 @@ optional reference residual r0:
     A(params)  = G0 + diag(p(params))            p = concat of p_b
     cf         = cho_factor(A, lower=True)        A = L L^T
     q          = mu + L^-T xi
-    mu         = A^-1 b0                          0 if center=False
+    mu         = A^-1 b0                          0 if origin="zero"
     ldJ        = -sum_i log L_ii                  log|dq/dxi|
+
+`origin` names where mu sits; it is NOT a switch for the reparameterization.
+The map is the non-centered ("decentered") one either way -- `L^-T` whitens
+the scale, and `origin` only chooses the point it whitens about:
+`"conditional_mode"` (A^-1 b0) or `"zero"` (the prior mean). The word
+"centered" is avoided deliberately: in the decentering literature it names
+the *prior* parameterization, which `q = L^-T xi` already is not, so a
+`center=` flag read exactly backwards.
 
 mu is a translation (dmu/dxi = 0): it never enters ldJ. For any invertible
 A(params) the map is a bijection with tracked Jacobian, so the transformed
@@ -39,6 +47,18 @@ bake_dtype = kh.bake_dtype
 
 def _as_bake(a):
     return kh.jnp.asarray(a, dtype=bake_dtype())
+
+
+#: Where the affine map's origin sits. See the module docstring.
+ORIGINS = ("conditional_mode", "zero")
+
+
+def _resolve_origin(origin, *, what):
+    """Validate `origin=` at the boundary, so nothing downstream can see junk."""
+    if origin not in ORIGINS:
+        raise ValueError(f"{what}: origin must be one of {list(ORIGINS)}; "
+                         f"got {origin!r}")
+    return origin
 
 
 # Relative tolerance on lambda_min(G0) / lambda_max(G0). A float64 bake of a
@@ -563,9 +583,15 @@ class Transport:
     """
 
     def __init__(self, blocks, *, reference_noise, reference_residual=None,
-                 center=True, center_extsignals=None, psr_slot=None,
-                 softclip=None):
+                 origin="conditional_mode", origin_extsignals=None,
+                 psr_slot=None, softclip=None):
         _kernels.require_metamath("Transport")
+
+        # Resolved and stored once, before anything else runs: no bare
+        # parameter survives to be shadowed, and `self.origin` is the only
+        # reader downstream.
+        self.origin = _resolve_origin(origin, what="Transport")
+        centered = self.origin == "conditional_mode"
 
         blocks = list(blocks)
         if not blocks:
@@ -579,7 +605,7 @@ class Transport:
 
         # -- index assembly: contiguous, non-overlapping, collision-checked --
         self.blocks = blocks
-        offset, self.index = 0, {}
+        column, self.index = 0, {}
         self._block_slice = {}       # block name -> assembled q-slice (softclip)
         for b in self.blocks:
             if b.conditioner_kind not in _KINDS:
@@ -597,15 +623,16 @@ class Transport:
                 if (sli.start, sli.stop) != (0, np.asarray(b.F).shape[1]):
                     raise ValueError(f"block '{b.name}': index slice must be "
                                      f"localized to slice(0, k_b); got {sli}")
-                self.index[key] = slice(offset + sli.start, offset + sli.stop)
+                self.index[key] = slice(column + sli.start,
+                                        column + sli.stop)
                 if b.name in self._block_slice:
                     raise ValueError(
                         f"duplicate block name '{b.name}'; softclip and "
                         f"diagnostics key blocks by name, so names must be "
                         f"unique")
                 self._block_slice[b.name] = self.index[key]
-            offset += np.asarray(b.F).shape[1]
-        self.dimension = offset
+            column += np.asarray(b.F).shape[1]
+        self.dimension = column
 
         # -- bake (construction-time boundary work) ---------------------------
         W = np.concatenate([np.asarray(b.F, dtype=np.float64)
@@ -627,9 +654,10 @@ class Transport:
         self._reference_noise = reference_noise
 
         self._b0 = None
-        if center:
+        if centered:
             if reference_residual is None:
-                raise ValueError("center=True requires reference_residual")
+                raise ValueError(
+                    'origin="conditional_mode" requires reference_residual')
             r0 = np.asarray(reference_residual, dtype=np.float64)
             if r0.shape != (self._ntoa,):
                 raise ValueError(f"reference_residual has shape {r0.shape}; "
@@ -641,15 +669,15 @@ class Transport:
         # with tracking, the per-evaluation factor uses the tracked (G, b).
         self._tracking = None
         if isinstance(reference_noise, ClassTracking):
-            r_bake = (np.asarray(reference_residual, dtype=np.float64) if center
-                      else np.zeros(self._ntoa))
+            r_bake = (np.asarray(reference_residual, dtype=np.float64)
+                      if centered else np.zeros(self._ntoa))
             self._tracking = reference_noise.bake(W, r_bake)
             self._track_arrays = tuple(None if x is None else _as_bake(x)
                                        for x in self._tracking.arrays())
 
-        if self._tracking is not None and center_extsignals:
+        if self._tracking is not None and origin_extsignals:
             raise NotImplementedError(
-                "class_tracking with center_extsignals is not supported: the ExtSignal "
+                "class_tracking with origin_extsignals is not supported: the ExtSignal "
                 "centering term E0 = W^T N0^-1 F_ext is formed from the frozen reference "
                 "noise, while tracking makes b = W^T N(theta)^-1 r0 live — the mixed "
                 "centering translation is silently wrong. Form E0 through the tracked "
@@ -660,41 +688,41 @@ class Transport:
         # from b0 before the centering solve. A translation only; ldJ unchanged.
         self._extsignals = []
         ext_params = []
-        if center_extsignals:
-            if not center:
+        if origin_extsignals:
+            if not centered:
                 raise ValueError(
-                    "center_extsignals requires center=True (it moves the "
-                    "centering translation)")
+                    'origin_extsignals requires origin="conditional_mode" '
+                    "(it moves the translation)")
             N0mW_np = np.asarray(N0mW)
-            for es in center_extsignals:
+            for es in origin_extsignals:
                 esname = getattr(es, 'name', 'extsignal')
                 Fs = getattr(es, 'Fs', None)
                 coeffs = getattr(es, 'coeffs', None)
                 if Fs is None or coeffs is None:
                     raise TypeError(
-                        f"center_extsignals entry '{esname}' must expose .Fs "
+                        f"origin_extsignals entry '{esname}' must expose .Fs "
                         f"and .coeffs (a discovery ExtSignal)")
                 if psr_slot is None:
                     if len(Fs) != 1:
                         raise ValueError(
-                            f"center_extsignals '{esname}': psr_slot is "
+                            f"origin_extsignals '{esname}': psr_slot is "
                             f"required to select one of {len(Fs)} pulsar bases")
                     slot = 0
                 else:
                     slot = psr_slot
                 if slot < 0 or slot >= len(Fs):
                     raise ValueError(
-                        f"center_extsignals '{esname}': psr_slot={slot} out of "
+                        f"origin_extsignals '{esname}': psr_slot={slot} out of "
                         f"range for {len(Fs)} pulsar bases")
                 Fext = np.asarray(Fs[slot], dtype=np.float64)
                 if Fext.ndim != 2 or Fext.shape[1] < 1:
                     raise ValueError(
-                        f"center_extsignals '{esname}': Fs[{slot}] must be "
+                        f"origin_extsignals '{esname}': Fs[{slot}] must be "
                         f"2-D (n_toa, k_ext) with k_ext >= 1; got "
                         f"shape {Fext.shape}")
                 if Fext.shape[0] != self._ntoa:
                     raise ValueError(
-                        f"center_extsignals '{esname}': Fs[{slot}] has "
+                        f"origin_extsignals '{esname}': Fs[{slot}] has "
                         f"{Fext.shape[0]} rows; expected n_toa={self._ntoa}")
                 E0 = _as_bake(N0mW_np.T @ Fext)             # (k, k_ext)
                 self._extsignals.append((E0, coeffs, slot, esname))
@@ -703,10 +731,10 @@ class Transport:
         # -- soft-clamp on named blocks' centering slices --------------------
         self._softclip = []
         if softclip:
-            if not center:
+            if not centered:
                 raise ValueError(
-                    "softclip requires center=True; it clamps the centering "
-                    "translation, which does not exist without centering")
+                    'softclip requires origin="conditional_mode"; it clamps '
+                    'the translation, which is zero under origin="zero"')
             for bname, zmax in dict(softclip).items():
                 if bname not in self._block_slice:
                     raise ValueError(
@@ -718,7 +746,6 @@ class Transport:
                 self._softclip.append(
                     (bname, self._block_slice[bname], float(zmax)))
 
-        self.center = center
         self.params = sorted(set(
             sum([list(b.conditioner_precision.params) for b in self.blocks], [])
             + ext_params
@@ -841,11 +868,11 @@ class Transport:
                 for b in self.blocks
             ],
             "dimension": self.dimension,
-            "center": self.center,
+            "origin": self.origin,
             "reference_noise": self.reference_description,
         }
         if self._extsignals:
-            out["center_extsignals"] = [name for *_, name in self._extsignals]
+            out["origin_extsignals"] = [name for *_, name in self._extsignals]
         if self._softclip:
             out["softclip"] = {name: zmax for name, _sli, zmax in self._softclip}
         if self._tracking is not None:
@@ -930,11 +957,11 @@ def _batched_extsignals(transports):
         return []
     if not all(flags):
         raise ValueError(
-            "ArrayTransport requires all-or-none ExtSignal centering")
+            "ArrayTransport requires all-or-none ExtSignal origins")
     n_es = {len(t._extsignals) for t in transports}
     if len(n_es) != 1:
         raise ValueError(
-            "ArrayTransport ExtSignal centering: pulsars disagree on the "
+            "ArrayTransport ExtSignal origins: pulsars disagree on the "
             f"number of ExtSignals {sorted(n_es)}")
     npsr = len(transports)
     k = transports[0].dimension
@@ -948,13 +975,13 @@ def _batched_extsignals(transports):
         coeffs_list = [t._extsignals[e][1] for t in transports]
         if len({id(c) for c in coeffs_list}) != 1:
             raise ValueError(
-                "ArrayTransport ExtSignal centering requires the same "
+                "ArrayTransport ExtSignal origins require the same "
                 "coeffs callable on every pulsar (pass the same ExtSignal "
                 "list to each Transport)")
         slots = [t._extsignals[e][2] for t in transports]
         if slots != list(range(npsr)):
             raise ValueError(
-                "ArrayTransport ExtSignal centering requires psr_slot=i "
+                "ArrayTransport ExtSignal origins require psr_slot=i "
                 f"in pulsar order; got slots {slots}")
         E0s = [np.asarray(t._extsignals[e][0]) for t in transports]
         if any(E.ndim != 2 for E in E0s):
@@ -1041,9 +1068,9 @@ class ArrayTransport:
       - EQUAL dimension k across pulsars (the array coefficient contract is a
         rectangular (npsr, k) array, so ragged transports cannot pass through
         it; ragged support is a non-goal);
-      - all-or-none centering (mixed centering would silently shift some
+      - all-or-none origin (a mixed origin would silently shift some
         pulsars' coordinates and not others');
-      - all-or-none ExtSignal centering, with the same ExtSignal list in the
+      - all-or-none ExtSignal origins, with the same ExtSignal list in the
         same order on every pulsar (equal k_ext, shared coeffs callable,
         psr_slot=i);
       - no softclip (still per-pulsar only).
@@ -1059,9 +1086,11 @@ class ArrayTransport:
                 f"ArrayTransport requires equal per-pulsar dimension; got "
                 f"{dims}. Ragged transports are not supported; "
                 f"use equal GP component counts across pulsars.")
-        centers = {t.center for t in transports}
-        if len(centers) != 1:
-            raise ValueError("ArrayTransport requires all-or-none centering")
+        origins = {t.origin for t in transports}
+        if len(origins) != 1:
+            raise ValueError(
+                "ArrayTransport requires all-or-none origin (a mixed origin "
+                "would shift some pulsars and not others)")
         if any(getattr(t, "_softclip", None) for t in transports):
             raise ValueError("ArrayTransport does not support softclip")
         self._extsignals = _batched_extsignals(transports)
@@ -1069,7 +1098,7 @@ class ArrayTransport:
         self.transports = transports
         self.dimension = dims[0]
         self.npsr = len(transports)
-        self.center = centers.pop()
+        self.origin = origins.pop()
         self.params = sorted(set().union(*[set(t.params) for t in transports]))
         if conditioner_precision is None:
             conditioner_precision = _stacked_array_conditioner(self.transports)
@@ -1082,7 +1111,7 @@ class ArrayTransport:
         # arithmetic as the decenter closure: preserve its call conventions.
         self._G0 = kh.jnparray([t._G0 for t in self.transports])
         self._b0 = (kh.jnparray([t._b0 for t in self.transports])
-                    if self.center else None)
+                    if self.origin == "conditional_mode" else None)
 
         # -- optional white-noise tracking: zero-padded per-pulsar stacks ----
         tracks = [t._tracking for t in self.transports]
@@ -1163,7 +1192,7 @@ class ArrayTransport:
              + jnp.einsum("pdk,pd->pk", self._Fd, pd * self._rd)
              - jnp.einsum("pek,pe->pk", Y, S * v))
         G = 0.5 * (G + jnp.swapaxes(G, 1, 2))
-        return G, (b if self.center else None)
+        return G, (b if self.origin == "conditional_mode" else None)
 
     def apply(self, params, c):
         # c: (npsr, k) -- the array coefficient contract.
@@ -1239,7 +1268,7 @@ class ArrayTransport:
             "params": list(self.params),
         }
         if self._extsignals:
-            out["center_extsignals"] = [name for *_, name in self._extsignals]
+            out["origin_extsignals"] = [name for *_, name in self._extsignals]
         return out
 
     def fingerprint(self):
@@ -1266,7 +1295,7 @@ class MarginalTransport:
 
     ``z = mu(params) + L(params)^-T xi``,
     ``A(params) = W^T C(params)^-1 W + diag(p(params))``,  ``A = L L^T``,
-    ``mu = A^-1 W^T C^-1 y`` (center=True) or ``0``,  ``ldJ = -sum(log diag L)``.
+    ``mu = A^-1 W^T C^-1 y`` (origin="conditional_mode") or ``0``,  ``ldJ = -sum(log diag L)``.
 
     ``C(params)`` is the LIVE marginalized covariance of the supplied metamath
     kernel (white noise + folded GPs + timing marginal blocks): the eta-dependent
@@ -1281,7 +1310,7 @@ class MarginalTransport:
     coordinate (D-INV). Do not pass a delay-modified CompoundDelay.
     """
 
-    def __init__(self, kernel, y, block, *, center=True):
+    def __init__(self, kernel, y, block, *, origin="conditional_mode"):
         _kernels.require_metamath("MarginalTransport")
 
         make_ks = getattr(kernel, "make_kernelsolve", None)
@@ -1314,7 +1343,7 @@ class MarginalTransport:
         self.index = {key: slice(0, W.shape[1])}
         self.dimension = int(W.shape[1])
         self._ntoa = int(W.shape[0])
-        self.center = bool(center)
+        self.origin = _resolve_origin(origin, what="MarginalTransport")
         self._kernel = kernel
         self._W = _as_bake(W)
         self._y = _as_bake(y)
@@ -1337,7 +1366,7 @@ class MarginalTransport:
         cf, b, _ = self._factor(params)
         z = kh.jsp.linalg.solve_triangular(cf[0], xi, trans=1, lower=cf[1])
         ldJ = -kh.jnp.sum(kh.jnp.log(kh.jnp.diag(cf[0])))
-        if self.center:
+        if self.origin == "conditional_mode":
             z = z + kh.jsp.linalg.cho_solve(cf, b)
         return z, ldJ
 
@@ -1434,7 +1463,7 @@ class MarginalTransport:
                  "keys": list(b.index), "conditioner_kind": b.conditioner_kind}
             ],
             "dimension": self.dimension,
-            "center": self.center,
+            "origin": self.origin,
             "reference_noise": "live_kernel",
             "kernel_measurement": getattr(self._kernel, "measurement", None),
         }
@@ -1465,7 +1494,7 @@ class MarginalTransport:
         return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def marginal_transport(kernel, y, block, *, center=True):
+def marginal_transport(kernel, y, block, *, origin="conditional_mode"):
     """Public factory for :class:`MarginalTransport`. See its docstring.
 
     ``kernel`` MUST be the assembled marginalized ``PulsarLikelihood.N`` (a
@@ -1476,4 +1505,4 @@ def marginal_transport(kernel, y, block, *, center=True):
     ``TypeError``; do not "simplify" to the WN kernel — the eta-dependence of the
     transport lives entirely in the folded GP priors.
     """
-    return MarginalTransport(kernel, y, block, center=center)
+    return MarginalTransport(kernel, y, block, origin=origin)

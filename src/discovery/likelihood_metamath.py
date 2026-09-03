@@ -837,7 +837,7 @@ class ArrayLikelihood(summary.SummaryMixin):
         reference, centered on the residuals `ys`.
 
         When this likelihood has `extsignals`, they are passed as
-        `center_extsignals` so the centering translation subtracts the
+        `origin_extsignals` so the centering translation subtracts the
         deterministic signal. An explicit `transport=` is caller-owned and
         is not modified here.
 
@@ -869,8 +869,8 @@ class ArrayLikelihood(summary.SummaryMixin):
                     description=f"frozen per-pulsar kernel ({name})")
             per_psr.append(_tr.Transport(
                 blocks, reference_noise=ref,
-                reference_residual=ys[i], center=True,
-                center_extsignals=ext, psr_slot=i))
+                reference_residual=ys[i], origin="conditional_mode",
+                origin_extsignals=ext, psr_slot=i))
         conditioners = [_tr.gp_array_conditioner(gp) for gp in cgp_list]
         if self.globalgp is not None:
             conditioners.append(
