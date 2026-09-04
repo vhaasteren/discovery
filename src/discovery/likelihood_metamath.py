@@ -213,6 +213,25 @@ class PulsarLikelihood(summary.SummaryMixin):
         else:
             self.__dict__[name] = value
 
+    @property
+    def white_noise_kernel(self):
+        """Canonical white-noise kernel (NoiseMatrix1D / NoiseMatrixSM) of this
+        likelihood, with a fixed ECORR GP component folded into the SM form; see
+        `discovery.classgram.white_noise_kernel`. `self.N` is the assembled
+        Woodbury stack (white noise + folded GP layers)."""
+        from . import classgram
+        return classgram.white_noise_kernel(self)
+
+    @property
+    def measurement_toaerrs(self):
+        """TOA uncertainties recorded on the measurement kernel's tag by
+        `makenoise_measurement*` (needed to build a `transport.class_tracking`)."""
+        meas = getattr(self.white_noise_kernel, "measurement", None)
+        if not meas or "toaerrs" not in meas:
+            raise ValueError("measurement kernel carries no toaerrs; build it with "
+                             "makenoise_measurement / makenoise_measurement_simple")
+        return np.asarray(meas["toaerrs"], dtype=np.float64)
+
     def build(self, names=('logL', 'clogL', 'conditional')):
         """Materialize the named frontends now, outside any JAX trace.
         Skips frontends this model does not support."""
@@ -607,13 +626,26 @@ class GlobalLikelihood(summary.SummaryMixin):
 class ArrayLikelihood(summary.SummaryMixin):
     def __init__(self, psls, *, commongp=None, globalgp=None, transform=None,
                  decenter=False, extsignals=None, reference=None,
-                 clogl_form="auto", transport=None):
+                 clogl_form="auto", transport=None, decenter_params0=None):
         if clogl_form not in ("auto", "cross", "residual"):
             raise ValueError(f"unknown clogl_form {clogl_form!r}")
         if decenter and transport is not None:
             raise ValueError(
                 "ArrayLikelihood: decenter=True and transport= are mutually "
                 "exclusive; decenter is transport-construction sugar")
+        if decenter_params0 is not None and (not decenter or transport is not None):
+            raise ValueError(
+                "ArrayLikelihood: decenter_params0 is the white-noise bake point "
+                "for decenter=True; it cannot be combined with transport= or "
+                "decenter=False")
+        if decenter_params0 is not None and extsignals:
+            raise NotImplementedError(
+                "ArrayLikelihood: decenter_params0 (class_tracking) with "
+                "extsignals is not supported: the ExtSignal centering term "
+                "E0 = W^T N0^{-1} F_ext is formed from the frozen reference "
+                "noise, while tracking makes b = W^T N(theta)^{-1} r0 live — "
+                "the mixed centering translation is silently wrong. Form E0 "
+                "through the tracked operator before enabling this combination.")
         if (decenter or transport is not None) and commongp is None:
             raise ValueError(
                 "ArrayLikelihood: decenter/transport requires a commongp "
@@ -629,6 +661,12 @@ class ArrayLikelihood(summary.SummaryMixin):
         self.globalgp = globalgp
         self.transform = transform
         self.decenter = decenter
+        # decenter_params0: a noisedict pinning every white-noise parameter of
+        # each per-pulsar kernel. With it, the decenter=True transport tracks
+        # the white-noise parameters (transport.class_tracking) instead of
+        # freezing them, so EFAC/EQUAD/ECORR may be sampled.
+        self.decenter_params0 = (None if decenter_params0 is None
+                                 else dict(decenter_params0))
         # reference+delta (single-precision Half B): an optional
         # single central params dict theta_ref. When given, each GP level's prior
         # covariance Phi is frozen ONCE at theta_ref in float64 (the "thin top
@@ -681,7 +719,7 @@ class ArrayLikelihood(summary.SummaryMixin):
     # validation runs only in __init__.
     _MUTABLE = ('reference',)
     _STRUCTURAL = ('psls', 'commongp', 'globalgp', 'transform', 'transport',
-                   'decenter', 'extsignals', 'clogl_form')
+                   'decenter', 'extsignals', 'clogl_form', 'decenter_params0')
 
     def __setattr__(self, name, value):
         if self.__dict__.get('_constructed'):
@@ -807,15 +845,18 @@ class ArrayLikelihood(summary.SummaryMixin):
         reference, centered on the residuals `ys`.
 
         When this likelihood has `extsignals`, they are passed as
-        `center_extsignals` so the centering translation subtracts the
-        deterministic signal. An explicit `transport=` is caller-owned and
-        is not modified here.
+        `origin_extsignals` so the centering translation subtracts the
+        deterministic signal. That combination is refused with
+        `decenter_params0` (`class_tracking` with `origin_extsignals`);
+        `__init__` raises before this builder runs. An explicit `transport=`
+        is caller-owned and is not modified here.
 
         `reference_noise_frozen(psl.N, params0={})` RAISES when the per-pulsar
         kernel has free parameters, converting the old closure's silent
         constant-N assumption into a diagnosed error. Callers with varying white
-        noise build the transport explicitly with `reference_noise(psr)` (or a
-        pinned noisedict) and pass it via `transport=`.
+        noise pass `decenter_params0=noisedict` (the transport then tracks the
+        white-noise parameters via `transport.class_tracking`), or build the
+        transport explicitly and pass it via `transport=`.
         """
         from . import transport as _tr
         cgp_list = self.commongp if isinstance(self.commongp, list) else [self.commongp]
@@ -826,12 +867,18 @@ class ArrayLikelihood(summary.SummaryMixin):
             blocks = [_tr.gp_block(gp, psr_slot=i) for gp in cgp_list]
             if self.globalgp is not None:
                 blocks.append(_tr.globalgp_curn_block(self.globalgp, i, npsr))
-            per_psr.append(_tr.Transport(
-                blocks,
-                reference_noise=_tr.reference_noise_frozen(
+            name = getattr(psl, 'name', f'psl[{i}]')
+            if self.decenter_params0 is not None:
+                ref = _tr.class_tracking(
+                    psl.white_noise_kernel, self.decenter_params0,
+                    toaerrs=psl.measurement_toaerrs,
+                    description=f"class-tracked per-pulsar white noise ({name})")
+            else:
+                ref = _tr.reference_noise_frozen(
                     psl.N, params0={},
-                    description=f"frozen per-pulsar kernel "
-                                f"({getattr(psl, 'name', f'psl[{i}]')})"),
+                    description=f"frozen per-pulsar kernel ({name})")
+            per_psr.append(_tr.Transport(
+                blocks, reference_noise=ref,
                 reference_residual=ys[i], origin="conditional_mode",
                 origin_extsignals=ext, psr_slot=i))
         conditioners = [_tr.gp_array_conditioner(gp) for gp in cgp_list]

@@ -220,17 +220,20 @@ al = ds.ArrayLikelihood(
 Requirements for `decenter=True`:
 
 - A `commongp` must be present.
-- White noise must be **fixed** at construction (frozen reference noise). If EFAC
-  etc. are free, construction raises with a clear message — build an explicit
-  `Transport` instead (below).
+- White noise must be **fixed** at construction (frozen reference noise),
+  or pass `decenter_params0=noisedict` to class-track it. If EFAC etc. are
+  free and `decenter_params0` is omitted, construction raises — pass the
+  bake point, or build an explicit `Transport` (below).
 - Mutually exclusive with `transport=...`.
+- `decenter_params0` cannot be combined with `extsignals=` (class-tracking
+  × ExtSignal centering is refused; see below).
 
-When `extsignals=` is also set, `decenter=True` subtracts those deterministic
-signals from the centering residual (the Fourier coefficients are centered on
-the ExtSignal-subtracted data). The Jacobian does not depend on ExtSignal
-parameters. An explicit `transport=` is caller-owned and is not rewritten
-from `extsignals`. `transport=` is metamath-only (`likelihood.py` has no
-such argument).
+When `extsignals=` is also set (without `decenter_params0`), `decenter=True`
+subtracts those deterministic signals from the centering residual (the
+Fourier coefficients are centered on the ExtSignal-subtracted data). The
+Jacobian does not depend on ExtSignal parameters. An explicit `transport=`
+is caller-owned and is not rewritten from `extsignals`. `transport=` is
+metamath-only (`likelihood.py` has no such argument).
 
 ### Explicit transport
 
@@ -247,8 +250,8 @@ for i, psl in enumerate(psls):
         blocks,
         reference_noise=tr.reference_noise_frozen(psl.N, params0={}),
         reference_residual=psl.y,
-        center=True,
-        center_extsignals=extsignals,   # same list on every pulsar
+        origin="conditional_mode",
+        origin_extsignals=extsignals,   # same list on every pulsar
         psr_slot=i,
     ))
 t = tr.ArrayTransport(per)
@@ -257,8 +260,53 @@ al = ds.ArrayLikelihood(psls, commongp=commongp, transport=t,
 ```
 
 `ArrayTransport` batches ExtSignal centering when every per-pulsar `Transport`
-was built with the same `center_extsignals` list and `psr_slot=i`. It still
+was built with the same `origin_extsignals` list and `psr_slot=i`. It still
 rejects `softclip`. Explicit `transport=` is metamath-only.
+`class_tracking` cannot be combined with `origin_extsignals` (see below).
+
+### Varying white noise: class-tracked reference
+
+`reference_noise_frozen` pins the white noise the chart whitens against. When
+EFAC/EQUAD/ECORR are sampled, a frozen chart gives the sampler a funnel
+(condition numbers of 10²–10⁵ on IPTA-style pulsars). `class_tracking` bakes
+the same reference *and* the exact Gram of a class-quantized white-noise
+model that follows the white-noise parameters: EFAC exactly, ECORR exactly,
+small backends exactly, EQUAD elsewhere to the spread of TOA errors inside
+0.2-dex classes. Cost: tens of `k×k` matrices plus one `(n_dense × k)` and one
+`(n_epoch × k)` contraction per step — a few ms per pulsar on CPU, against
+tens of ms for the exact Gram.
+
+```python
+ref = tr.class_tracking(psl.white_noise_kernel, params0=noisedict, toaerrs=psr.toaerrs)
+t = tr.Transport(blocks, reference_noise=ref, reference_residual=psl.y,
+                 origin="conditional_mode")
+```
+
+or, for the sugar, `ds.ArrayLikelihood(psls, commongp=..., decenter=True,
+decenter_params0=noisedict)`. ECORR may be given either as
+`makenoise_measurement(..., ecorr=True)` or as a fixed `makegp_ecorr`
+component; both are folded into the same Sherman–Morrison form
+(`PulsarLikelihood.white_noise_kernel`). Free ECORR hyperparameters need the
+former; a `makegp_ecorr` without a noisedict is a sampled-amplitude GP in
+`clogL` and is a transport *block*, not white noise. `params0` must be a
+sensible white-noise point (empirical-Bayes dictionary, MPE), not `toaerrs`:
+the chart is exact there and degrades smoothly away from it.
+`transport.diagnostics(params, noise_solve=...)` reports the whitened metric
+eigenvalues against a live solve; `diagnostics()["tracking"]` reports the
+class/dense-row counts and the bake-point digest. The chart is a coordinate
+choice: it never changes the posterior, only the sampler's efficiency.
+`make_packed_clogL` requires frozen noise and refuses a tracked model.
+
+`class_tracking` with `origin_extsignals` raises `NotImplementedError`.
+ExtSignal centering still bakes \(E_0 = W^\top N_0^{-1} F_{\mathrm{ext}}\)
+from the **frozen** reference, while tracking makes
+\(b = W^\top N(\theta)^{-1} r_0\) live; mixing them silently shifts the
+centering translation. The sugar refuses the same combination at
+`ArrayLikelihood` construction (`decenter=True`, `decenter_params0=...`,
+`extsignals=...`). Form \(E_0\) through the tracked operator before
+enabling this; that is not in this PR. Frozen-noise ExtSignal centering
+(`decenter=True` without `decenter_params0`, or an explicit frozen
+transport) is unchanged.
 
 Helpers:
 
@@ -268,6 +316,7 @@ Helpers:
 | `tr.globalgp_curn_block(globalgp, psr_slot, npsr)` | Dense global prior → per-pulsar inverse-marginal-variance conditioner |
 | `tr.array_block(F, index, conditioner_precision, name=...)` | Caller-owned basis (e.g. timing); precision is mandatory |
 | `tr.reference_noise(psr)` / `tr.reference_noise_frozen(kernel, params0)` | Freeze $N_0$ for the transport bake |
+| `tr.class_tracking(kernel, params0, toaerrs=...)` | White-noise-tracking reference for sampled EFAC/EQUAD/ECORR (`PulsarLikelihood.white_noise_kernel`) |
 | `Transport` / `ArrayTransport` | Map $\xi\mapsto q$ with log Jacobian |
 | `MarginalTransport` / `marginal_transport(...)` | Live-kernel decentering of one external block against marginalized $C(\eta)$ |
 | `t.fingerprint()` | Stable structural digest (for run manifests) |
@@ -277,6 +326,8 @@ Failure semantics (user-visible):
 
 - Construction and `validate(params)` raise on bad shapes / non-PD conditioners.
 - Runtime `apply` under JAX is NaN-propagating (no silent floors on prior precision).
+- `class_tracking` + `origin_extsignals` (and the `decenter_params0` +
+  `extsignals` sugar) raise `NotImplementedError`.
 
 Recipes that wrap common decenter patterns live in `discovery.recipes`
 (`decenter_intrinsic_rn`, `decenter_intrinsic_rn_global_hd`,

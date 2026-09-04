@@ -238,7 +238,7 @@ def _unit_column_ref(n_toa, n0_scalar):
 
 def _one_by_one_A(transport):
     """The scalar precision A = L^2 of a 1-block, 1-column transport at params={}."""
-    cf, _ = transport._factor({})
+    cf, _, _b = transport._factor({})
     L = np.asarray(cf[0])
     return float(L[0, 0]) ** 2
 
@@ -648,7 +648,7 @@ def test_inverse_map_round_trip_and_shared_target(psr, metamath_backend):
     q_phys = kh.jnparray(np.random.default_rng(3).normal(size=t_diag.dimension))
 
     for t in (t_diag, t_frozen):
-        cf, _ = t._factor(params)
+        cf, _, _b = t._factor(params)
         # xi = L^T (q - mu); here origin="zero" so mu=0
         xi = np.asarray(cf[0]).T @ np.asarray(q_phys)
         q_back, _ = t.apply(params, kh.jnparray(xi))
@@ -840,7 +840,7 @@ def test_array_transport_fingerprint_is_stable(psrs, metamath_backend):
 
 
 class _FakeExtSignal:
-    """Minimal ExtSignal duck for center_extsignals tests: .Fs, .coeffs, .name."""
+    """Minimal ExtSignal duck for origin_extsignals tests: .Fs, .coeffs, .name."""
 
     def __init__(self, Fs, kext, name="cw"):
         self.Fs, self.name = Fs, name
@@ -929,7 +929,7 @@ def test_softclip_clamps_centering_slice(psr, metamath_backend):
     assert t.diagnostics()["softclip"] == {"timing": 4.0}
 
 
-def test_softclip_and_extsignals_require_center(psr, metamath_backend):
+def test_softclip_and_extsignals_require_the_mode_origin(psr, metamath_backend):
     F = np.asarray(psr.residuals)[:, None]
     ref = _diag_ref(psr)
     with pytest.raises(ValueError, match="softclip requires origin"):
@@ -1223,7 +1223,7 @@ def test_decenter_sugar_without_extsignals_unchanged_params(psrs, metamath_backe
     model = R.decenter_intrinsic_rn(psrs)
     ys = model._coefficient_assembly[1]
     at = model._build_decenter_transport(ys)
-    assert "center_extsignals" not in at.diagnostics()
+    assert "origin_extsignals" not in at.diagnostics()
     cw_names = set(R.decenter_extsignal_cw(psrs).extsignals[0].params)
     assert cw_names.isdisjoint(at.params)
 
@@ -1256,10 +1256,10 @@ def test_explicit_transport_does_not_absorb_likelihood_extsignals(psrs, metamath
                 origin="conditional_mode",
             )
         )
-        # no center_extsignals
+        # no origin_extsignals
     at = tr.ArrayTransport(per)
     al = ds.ArrayLikelihood(psls, commongp=commongp, transport=at, extsignals=[cw])
-    assert "center_extsignals" not in al.transport.diagnostics()
+    assert "origin_extsignals" not in al.transport.diagnostics()
     assert set(cw.params).isdisjoint(al.transport.params)
 
 
@@ -1289,7 +1289,7 @@ def test_apply_grad_log10_h0_is_the_centering_path(psrs, metamath_backend):
     fd = float((mean_norm(x0 + eps) - mean_norm(x0 - eps)) / (2 * eps))
     np.testing.assert_allclose(g, fd, rtol=2e-3, atol=1e-3)
 
-    # Same model, caller-owned transport without center_extsignals: zero.
+    # Same model, caller-owned transport without origin_extsignals: zero.
     psls, commongp = model.psls, model.commongp
     per = []
     for i, psl in enumerate(psls):
@@ -1794,3 +1794,191 @@ def test_indefinite_reference_gram_raises_at_construction(psrs, metamath_backend
 
     with pytest.raises(ValueError, match="indefinite"):
         tr.Transport([block], reference_noise=Flipped(), origin="zero")
+
+
+# ==========================================================================
+# white-noise tracking (class_tracking): the transport seam
+# ==========================================================================
+
+def _wn_kernel(psr):
+    return ds.makenoise_measurement(psr, {})
+
+
+def _wn_params0(psr):
+    return {k: v for k, v in psr.noisedict.items()
+            if k.endswith(("_efac", "_log10_t2equad"))}
+
+
+def _blocks_for(psrs, i):
+    return [tr.gp_block(_commongp(psrs), psr_slot=i)]
+
+
+def _tracked_and_frozen(psr, psrs, i, **kw):
+    kern = _wn_kernel(psr)
+    p0 = _wn_params0(psr)
+    r0 = np.asarray(psr.residuals)
+    tracked = tr.Transport(
+        _blocks_for(psrs, i),
+        reference_noise=tr.class_tracking(kern, p0, toaerrs=psr.toaerrs, **kw),
+        reference_residual=r0, origin="conditional_mode")
+    frozen = tr.Transport(
+        _blocks_for(psrs, i),
+        reference_noise=tr.reference_noise_frozen(kern, params0=p0),
+        reference_residual=r0, origin="conditional_mode")
+    return tracked, frozen, kern, p0
+
+
+def _hyper_params(transport, psr, seed=0):
+    """A params dict for every transport parameter, white noise at the bake point."""
+    np.random.seed(seed)                      # ds.sample_uniform draws from the global RNG
+    p = ds.sample_uniform(transport.params)
+    p.update(_wn_params0(psr))
+    return p
+
+
+def test_tracked_transport_reproduces_frozen_at_bake_point(psrs, metamath_backend):
+    psr = psrs[0]
+    tracked, frozen, _kern, _p0 = _tracked_and_frozen(psr, psrs, 0)
+    params = _hyper_params(tracked, psr)
+    xi = kh.jnparray(np.random.default_rng(3).standard_normal(tracked.dimension))
+    q_t, ld_t = tracked.apply(params, xi)
+    q_f, ld_f = frozen.apply(params, xi)
+    assert np.allclose(np.asarray(q_t), np.asarray(q_f), rtol=1e-12, atol=0)
+    assert abs(float(ld_t) - float(ld_f)) < 1e-10 * abs(float(ld_f))
+    assert tracked.validate(params)["tracking"]["n_epoch"] == 0
+
+
+def test_tracked_transport_declares_white_noise_params(psrs, metamath_backend):
+    psr = psrs[0]
+    tracked, frozen, _kern, p0 = _tracked_and_frozen(psr, psrs, 0)
+    assert set(p0) <= set(tracked.as_reparam().params)
+    assert not (set(p0) & set(frozen.as_reparam().params))
+
+
+def test_tracked_metric_is_exact_under_efac_moves(psrs, metamath_backend):
+    psr = psrs[0]
+    tracked, frozen, kern, p0 = _tracked_and_frozen(psr, psrs, 0)
+    params = _hyper_params(tracked, psr)
+    # per-backend, non-uniform EFAC moves (a uniform scale is invisible to cond)
+    for j, k in enumerate(sorted(k for k in p0 if k.endswith("_efac"))):
+        params[k] = p0[k] * (0.6 + 0.5 * j)
+    live = metamatrix.func(kern.make_solve)
+
+    def noise_solve(X, _p=dict(params)):
+        return live(X, params=_p)
+    d_t = tracked.diagnostics(params, noise_solve=noise_solve)
+    d_f = frozen.diagnostics(params, noise_solve=noise_solve)
+    assert d_t["metric_eig_max"] / d_t["metric_eig_min"] < 1 + 1e-8
+    assert d_f["metric_eig_max"] / d_f["metric_eig_min"] > 1.3
+
+
+def test_tracked_fingerprint_distinguishes_bake_points(psrs, metamath_backend):
+    psr = psrs[0]
+    tracked, frozen, kern, p0 = _tracked_and_frozen(psr, psrs, 0)
+    again, _, _, _ = _tracked_and_frozen(psr, psrs, 0)
+    assert tracked.fingerprint() != frozen.fingerprint()
+    assert tracked.fingerprint() == again.fingerprint()
+    other = tr.Transport(
+        _blocks_for(psrs, 0),
+        reference_noise=tr.class_tracking(
+            kern, {k: (v * 1.1 if k.endswith("_efac") else v) for k, v in p0.items()},
+            toaerrs=psr.toaerrs),
+        reference_residual=np.asarray(psr.residuals), origin="conditional_mode")
+    assert other.fingerprint() != tracked.fingerprint()
+    assert "tracking" not in frozen.diagnostics()
+    assert frozen._gram({})[0] is frozen._G0
+
+
+def test_class_tracking_rejects_incomplete_bake_point(psrs, metamath_backend):
+    psr = psrs[0]
+    p0 = _wn_params0(psr)
+    p0.pop(next(iter(p0)))
+    with pytest.raises(ValueError, match="missing"):
+        tr.class_tracking(_wn_kernel(psr), p0, toaerrs=psr.toaerrs)
+
+
+def test_array_transport_tracking_matches_stacked_per_pulsar(psrs, metamath_backend):
+    per, params = [], {}
+    for i, p in enumerate(psrs):
+        kern = ds.makenoise_measurement(p, {}, ecorr=True, enterprise=True)
+        p0 = {k: v for k, v in p.noisedict.items()
+              if k.endswith(("_efac", "_log10_t2equad", "_log10_ecorr"))}
+        per.append(tr.Transport(
+            _blocks_for(psrs, i),
+            reference_noise=tr.class_tracking(kern, p0, toaerrs=p.toaerrs),
+            reference_residual=np.asarray(p.residuals), origin="conditional_mode"))
+        params.update({k: (v * 1.2 if k.endswith("_efac") else v + 0.3) for k, v in p0.items()})
+    assert len({t._tracking.n_epoch for t in per}) > 1          # unequal padding exercised
+    at = tr.ArrayTransport(per)
+    params.update(ds.sample_uniform([q for q in at.params if q not in params]))
+    c = kh.jnparray(np.random.default_rng(1).standard_normal((len(psrs), at.dimension)))
+    am, ld = at.apply(params, c)
+    qs, lds = zip(*[t.apply(params, c[i]) for i, t in enumerate(per)])
+    assert np.allclose(np.asarray(am), np.stack([np.asarray(q) for q in qs]), rtol=1e-11, atol=0)
+    assert abs(float(ld) - sum(float(x) for x in lds)) < 1e-9 * abs(float(ld))
+    with pytest.raises(ValueError, match="all-or-none"):
+        tr.ArrayTransport([per[0], _transport_for(psrs[1], psrs, 1)])
+
+
+def test_class_tracking_with_origin_extsignals_raises(psrs, metamath_backend):
+    """Tracking plus ExtSignal centering mixes a frozen E0 with a live b."""
+    psr = psrs[0]
+    r0 = np.asarray(psr.residuals)
+    Fext = np.random.default_rng(3).standard_normal((r0.shape[0], 2))
+    es = _FakeExtSignal([Fext], 2, name="cw")
+    with pytest.raises(NotImplementedError, match="class_tracking with origin_extsignals"):
+        tr.Transport(
+            _blocks_for(psrs, 0),
+            reference_noise=tr.class_tracking(
+                _wn_kernel(psr), _wn_params0(psr), toaerrs=psr.toaerrs),
+            reference_residual=r0, origin="conditional_mode",
+            origin_extsignals=[es], psr_slot=0)
+
+
+def test_arraylikelihood_decenter_params0_with_extsignals_raises(
+        psrs, metamath_backend):
+    """Sugar must refuse at ArrayLikelihood construction, not inside Transport."""
+    p0 = {}
+    for p in psrs:
+        p0.update(_wn_params0(p))
+    es = _FakeExtSignal(
+        [np.random.default_rng(0).standard_normal((len(p.residuals), 2))
+         for p in psrs],
+        2, name="cw")
+    with pytest.raises(NotImplementedError,
+                       match="decenter_params0.*extsignals"):
+        ds.ArrayLikelihood(
+            [_psl_freewn(p) for p in psrs],
+            commongp=_commongp(psrs), decenter=True,
+            decenter_params0=p0, extsignals=[es])
+
+
+def test_arraylikelihood_decenter_params0_tracks_free_white_noise(psrs, metamath_backend):
+    p0 = {}
+    for p in psrs:
+        p0.update(_wn_params0(p))
+    model = ds.ArrayLikelihood([_psl_freewn(p) for p in psrs],
+                               commongp=_commongp(psrs), decenter=True,
+                               decenter_params0=p0)
+    clogl = model.clogL
+    assert set(p0) <= set(clogl.params)
+    coeff = [q for q in clogl.params if "_coefficients(" in q]
+    pp = ds.sample_uniform([q for q in clogl.params if q not in coeff])
+    rng = np.random.default_rng(0)
+    for key in coeff:
+        pp[key] = rng.normal(size=int(key[key.index("(") + 1:key.index(")")]))
+    out = clogl(pp)
+    logp = float(out[0]) if isinstance(out, tuple) else float(out)
+    assert np.isfinite(logp)
+    # packed clogL needs frozen noise: loud failure, not silent
+    from discovery.packed import PackedClogLUnsupported
+    with pytest.raises(PackedClogLUnsupported, match="class-tracked"):
+        model.make_packed_clogL()
+    with pytest.raises(ValueError, match="decenter_params0"):
+        ds.ArrayLikelihood([_psl_freewn(p) for p in psrs], commongp=_commongp(psrs),
+                           decenter_params0=p0)
+    per = [_transport_for(p, psrs, i) for i, p in enumerate(psrs)]
+    with pytest.raises(ValueError, match="mutually exclusive|decenter_params0"):
+        ds.ArrayLikelihood([_psl_freewn(p) for p in psrs], commongp=_commongp(psrs),
+                           decenter=True, transport=tr.ArrayTransport(per),
+                           decenter_params0=p0)

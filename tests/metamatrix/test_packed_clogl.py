@@ -168,6 +168,16 @@ def test_wrong_shapes_raise(psrs, metamath_backend):
         transform=lambda params, c: (c, 0.0),
     ), "user transforms"),
     (lambda psrs: R.means_on_commongp(psrs), "GP prior means"),
+    (lambda psrs: ds.ArrayLikelihood(
+        [ds.PulsarLikelihood([p.residuals, ds.makenoise_measurement(p, {})])
+         for p in psrs],
+        commongp=ds.makecommongp_fourier(
+            psrs, ds.powerlaw, components=6, T=ds.getspan(psrs),
+            name="rednoise"),
+        decenter=True,
+        decenter_params0={k: v for p in psrs for k, v in p.noisedict.items()
+                          if k.endswith(("_efac", "_log10_t2equad"))},
+    ), "class-tracked"),
 ])
 def test_ineligibility_reasons(psrs, metamath_backend, builder, fragment):
     model = builder(psrs)
