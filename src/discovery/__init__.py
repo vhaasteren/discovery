@@ -15,6 +15,7 @@ from .optimal import *
 from .solar import *
 from .pulsar import *
 from .deterministic import *
+from . import fp32gwb
 
 
 _KERNELS = "matrix"      # metamath is opt-in; flipping the default is later and gated

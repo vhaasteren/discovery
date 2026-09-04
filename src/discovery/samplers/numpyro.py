@@ -3,6 +3,7 @@ import pickle
 from pathlib import Path
 
 import jax
+import numpy as np
 import jax.numpy as jnp
 import pandas as pd
 
@@ -58,6 +59,44 @@ def makemodel_packed(array_likelihood, priordict={}, *,
 
     numpyro_model.to_df = lambda chain: packed.samples_to_df(chain)
     numpyro_model.packed_clogL = packed
+    return numpyro_model
+
+
+def makemodel_gwb_fp32(kernel, priordict={}, *, store_coefficients=False):
+    """NumPyro model for :class:`discovery.fp32gwb.GWBMarginalFp32`.
+
+    Sites: a bounded Uniform ``theta`` vector (hyperparameters, Discovery names)
+    and a standard-normal ``xi`` array ``(npsr, 2*components_gw)``. The kernel
+    returns the decentered joint WITHOUT the ``-1/2 xi^T xi`` base term, which the
+    Normal site supplies, so no correction factor is needed. Run with
+    ``jax.config.update('jax_default_matmul_precision', 'highest')`` on GPU.
+    """
+    lows, highs = [], []
+    for name, start, stop, _shape in kernel.theta_layout:
+        lo, hi = prior.getprior_uniform(name, priordict)
+        lows.extend([lo] * (stop - start)); highs.extend([hi] * (stop - start))
+    low, high = jnp.asarray(lows), jnp.asarray(highs)
+
+    def numpyro_model():
+        theta = numpyro.sample("theta", dist.Uniform(low, high).to_event(1))
+        xi = numpyro.sample("xi", dist.Normal(0.0, 1.0).expand(kernel.xi_shape).to_event(2))
+        logp, coefficients = kernel.kernel(theta, xi)
+        numpyro.factor("logp", logp)
+        if store_coefficients:
+            numpyro.deterministic("gw_coefficients", coefficients)
+
+    def to_df(chain):
+        theta = np.asarray(chain["theta"]); columns = {}
+        for name, start, stop, shape in kernel.theta_layout:
+            if not shape:
+                columns[name] = theta[:, start]
+            else:
+                for j in range(stop - start):
+                    columns[f"{name[:name.rfind('(')]}[{j}]"] = theta[:, start + j]
+        return pd.DataFrame(columns)
+
+    numpyro_model.to_df = to_df
+    numpyro_model.kernel = kernel
     return numpyro_model
 
 

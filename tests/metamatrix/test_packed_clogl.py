@@ -1,4 +1,4 @@
-"""Packed clogL layout, eligibility, and named-graph packing."""
+"""Packed clogL layout, eligibility, and fused-kernel parity."""
 
 import numpy as np
 import pytest
@@ -206,6 +206,24 @@ def test_jit_pytree_has_two_leaves(psrs, metamath_backend):
     assert len(jax.tree_util.tree_leaves((theta, xi))) == 2
 
 
+def test_fused_jaxpr_has_no_dense_global_covariance(psrs, metamath_backend):
+    model = R.decenter_intrinsic_rn_global_hd(psrs)
+    packed = model.make_packed_clogL()
+    p0 = _fill_params(model)
+    theta, xi = packed.pack(p0)
+    closed = jax.make_jaxpr(lambda t, x: packed(t, x)[0])(theta, xi)
+    npsr, k_gw = len(psrs), model.globalgp.separable_prior.width
+    forbidden = (npsr * k_gw, npsr * k_gw)
+    shapes = []
+    for eqn in closed.jaxpr.eqns:
+        for out in eqn.outvars:
+            aval = getattr(out, "aval", None)
+            shape = getattr(aval, "shape", None)
+            if shape:
+                shapes.append(tuple(shape))
+    assert forbidden not in shapes
+
+
 def test_named_and_packed_independently_callable(psrs, metamath_backend):
     model = R.decenter_intrinsic_rn(psrs)
     p0 = _fill_params(model)
@@ -285,3 +303,33 @@ def test_packed_checkpoint_round_trip(psrs, metamath_backend, tmp_path):
     assert packed.theta_names[0] in df.columns or any(
         col.startswith(packed.theta_names[0].split("(")[0]) for col in df.columns
     )
+
+
+def test_fused_constants_are_baked_in_float64_under_float32_working(psrs, metamath_backend):
+    """The fused kernel's frozen products (F^T N^-1 F, N^-1 F^T y, y^T N^-1 y,
+    log det N) and the transport's G0/b0 are baked in float64 regardless of
+    `config(working=float32)`, and the packed log-density under the float32
+    configuration matches the float64 one. Before this guarantee the float32
+    bake left F^T N^-1 F indefinite and the frozen scalars (~1e7) resolved to
+    O(1), which froze NUTS at step sizes ~1e-10."""
+    model64 = R.decenter_intrinsic_rn_global_hd(psrs)
+    packed64 = model64.make_packed_clogL()
+    p0 = _fill_params(model64)
+    theta, xi = packed64.pack(p0)
+    ref = _logp(packed64(theta, xi))
+
+    ds.utils.config(backend="jax", factor="cholesky", working=jnp.float32)
+    try:
+        model32 = R.decenter_intrinsic_rn_global_hd(psrs)
+        packed32 = model32.make_packed_clogL()
+        out = packed32(theta, xi)
+    finally:
+        ds.utils.config(backend="jax", factor="cholesky")
+
+    assert packed32.transport._G0.dtype == jnp.float64
+    assert packed32.transport._b0.dtype == jnp.float64
+    assert out[0].dtype == jnp.float64
+    for G in np.asarray(packed32.transport._G0):
+        lam = np.linalg.eigvalsh(G)
+        assert lam[0] >= -1e-9 * lam[-1]
+    np.testing.assert_allclose(_logp(out), ref, rtol=1e-9)

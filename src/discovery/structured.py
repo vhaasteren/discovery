@@ -48,6 +48,7 @@ class SeparableFourierPrior:
     spectrum: Callable
     npsr: int
     width: int
+    orf: object = None            # the ORF matrix itself, float64 (bake-side consumers, e.g. fp32gwb)
 
     @classmethod
     def build(cls, orf, spectrum, width):
@@ -67,6 +68,7 @@ class SeparableFourierPrior:
             spectrum=spectrum,
             npsr=orf.shape[0],
             width=int(width),
+            orf=orf,
         )
 
     @property

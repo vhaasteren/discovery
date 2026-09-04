@@ -37,15 +37,27 @@ theta, xi = packed.pack(params)
 params = packed.unpack(theta, xi)
 ```
 
-## How evaluation works
+## What the fused kernel is
 
-`packed(theta, xi)` unpacks to the named dict and calls `model.clogL`.
-`oracle` is the same path. The numerical value is identical by
-construction; the difference is the JIT ABI (two leaves instead of one
-named dict).
+`packed(theta, xi)` does **not** call `model.clogL`. Construction
+(`make_packed_clogL`) freezes the same data products the graph already
+folds — `FtNmF`, `NmFty`, ExtSignal grams, the transport `G0` / `b0` —
+and builds one JIT function (`packed.kernel`).
 
-The named graph already uses the structured prior and batched
-conditioner internally. Packing does not change that algebra.
+That function is the **fused kernel**: a single JAX body that
+
+1. evaluates the batched decentering conditioner from `theta`;
+2. factors \(G_0 + \mathrm{diag}(p)\) as a batched `(npsr, k, k)` Cholesky;
+3. maps \(\xi \mapsto c\);
+4. forms the cross-form data term, the diagonal RN prior, a separable
+   Hellings–Downs prior when present, and ExtSignal cross terms.
+
+`packed.oracle(theta, xi)` unpacks to a named dict and calls `model.clogL`.
+Use it to check parity; do not use it as the sampling hot path.
+
+The named graph already uses the same structured prior and batched
+conditioner internally. Packing does not enable those optimizations; it
+changes the JIT ABI and removes the graph walk at evaluation time.
 
 ## NumPyro
 
