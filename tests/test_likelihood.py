@@ -12,6 +12,8 @@ jax.config.update('jax_enable_x64', True)
 
 import discovery as ds
 
+from metamatrix._comparison import assert_cho_close
+
 
 class TestLikelihood:
     def _singlepsr_likelihoods(self, psr):
@@ -430,16 +432,13 @@ class TestAllVariableConditional:
                 if p0 is None:
                     p0 = ds.sample_uniform(cond.params)
                 mu, cf = cond(p0)
-                out[kernels] = (np.asarray(mu), np.asarray(cf[0]), bool(cf[1]))
+                out[kernels] = (np.asarray(mu), cf)
             finally:
                 ds.config(kernels="matrix")
 
         np.testing.assert_allclose(out["matrix"][0], out["metamath"][0], rtol=1e-10)
-        # The factor itself is compared more loosely: the two routes assemble
-        # Sigma by different (algebraically identical) orderings, so a handful of
-        # entries differ at the float64 rounding level.
-        np.testing.assert_allclose(out["matrix"][1], out["metamath"][1], rtol=1e-8)
-        assert out["matrix"][2] == out["metamath"][2]
+        assert_cho_close(out["metamath"][1], out["matrix"][1],
+                         name="conditional.cf")
 
 
 class TestConcatShadowGuard:

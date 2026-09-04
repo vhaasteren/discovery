@@ -13,7 +13,7 @@ import jax
 
 import discovery as ds
 
-from ._comparison import assert_close, assert_params_equal
+from ._comparison import assert_cho_close, assert_close, assert_params_equal
 from ._routes import build_routes
 import discovery.recipes as R
 
@@ -82,8 +82,7 @@ def test_conditional(psrs, build):
         mu, cf = r[route].conditional(p0)
         assert_close(np.asarray(mu), np.asarray(mu_ref), kind="coeffs",
                      name=f"{build.__name__}[{route}].mu")
-        assert_close(np.asarray(cf[0]), np.asarray(cf_ref[0]), kind="matrix",
-                     name=f"{build.__name__}[{route}].cf")
+        assert_cho_close(cf, cf_ref, name=f"{build.__name__}[{route}].cf")
 
 
 SAMPLE_ROWS = [
