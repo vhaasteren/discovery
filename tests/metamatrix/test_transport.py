@@ -589,10 +589,10 @@ def test_array_transport_unequal_dimensions_raises(psrs, metamath_backend):
         tr.ArrayTransport([a, b])
 
 
-def test_array_transport_mixed_centering_raises(psrs, metamath_backend):
+def test_array_transport_mixed_origin_raises(psrs, metamath_backend):
     a = _transport_for(psrs[0], psrs, 0, origin="conditional_mode")
     b = _transport_for(psrs[1], psrs, 1, origin="zero")
-    with pytest.raises(ValueError, match="all-or-none centering"):
+    with pytest.raises(ValueError, match="all-or-none origin"):
         tr.ArrayTransport([a, b])
 
 
@@ -1033,7 +1033,7 @@ def test_array_transport_extsignals_all_or_none(psrs, metamath_backend):
         reference_residual=r1,
         origin="conditional_mode",
     )
-    with pytest.raises(ValueError, match="all-or-none ExtSignal centering"):
+    with pytest.raises(ValueError, match="all-or-none ExtSignal origins"):
         tr.ArrayTransport([t0, t1])
 
 
